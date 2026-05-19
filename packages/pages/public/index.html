@@ -21,7 +21,9 @@
   .panel h2 { font-size: 1rem; margin-bottom: 16px; color: var(--accent); }
   table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
   th { text-align: left; color: var(--muted); padding: 8px 12px; border-bottom: 1px solid var(--border); font-weight: 500; }
-  td { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  td.reasoning { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; color: var(--muted); font-size: 0.75rem; }
+  td.reasoning.expanded { white-space: normal; max-width: none; color: var(--text); }
   tr:hover { background: rgba(56, 189, 248, 0.05); }
   .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; }
   .badge.win { background: rgba(74,222,128,0.2); color: var(--green); }
@@ -31,16 +33,29 @@
   .loading { color: var(--muted); text-align: center; padding: 32px; }
   .online { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--green); margin-right: 6px; }
   .offline { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--red); margin-right: 6px; }
+  .note { color: var(--muted); font-size: 0.7rem; margin-top: 2px; }
 </style>
 </head>
 <body>
 <h1>EquityEquine <span id="status-dot" class="offline"></span></h1>
-<p class="subtitle">競馬予想評価システム</p>
+<p class="subtitle">競馬予想評価システム ｜ 推論モデル: DeepSeek V4 Flash ｜ データ元: netkeiba.com</p>
 
 <div class="stats" id="stats"></div>
 
 <div class="panel">
-  <h2>推奨馬リスト (期待値 EV = P × O &gt; 1.25)</h2>
+  <h2>予測一覧 (勝率順)</h2>
+  <p class="note">算出方法: DeepSeek V4 Flash が 戦績・血統(父/母父)・通過順位・上がり3F + 出遅れ/掛かり不利要素 を分析し、オッズを遮断した上で全馬の勝率Pの合計が100%になるよう算出。EV = P × 単勝オッズ。EV &gt; 1.25 を推奨馬とする。</p>
+  <div style="margin-bottom:12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+    <select id="race-filter" style="background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px 12px;border-radius:6px;font-size:0.8rem;">
+      <option value="">全レース</option>
+    </select>
+    <select id="sort-select" style="background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px 12px;border-radius:6px;font-size:0.8rem;">
+      <option value="winProbability">勝率順</option>
+      <option value="expectedValue">EV順</option>
+      <option value="odds">オッズ順</option>
+      <option value="result">結果順</option>
+    </select>
+  </div>
   <div id="recommended-table"></div>
 </div>
 
@@ -56,6 +71,7 @@
 
 <script>
 const API_BASE = "https://equity-equine-worker.tachibanananana.workers.dev/dashboard";
+let allPredictions = [];
 
 async function fetchJSON(url) {
   const res = await fetch(url);
@@ -73,9 +89,9 @@ function renderStats(stats) {
   `;
 }
 
-function renderRecommended(items) {
+function renderTable(items) {
   if (!items.length) {
-    document.getElementById('recommended-table').innerHTML = '<p class="loading">データがありません</p>';
+    document.getElementById('recommended-table').innerHTML = '<p class="loading">データがありません (予測未実行)</p>';
     return;
   }
   const rows = items.map(r => {
@@ -84,32 +100,59 @@ function renderRecommended(items) {
     else if (r.result === 1) badge = '<span class="badge win">1着</span>';
     else badge = `<span class="badge lose">${r.result}着</span>`;
     const ev = r.expectedValue ? Number(r.expectedValue).toFixed(2) : '-';
+    const recBadge = r.recommended === 1 ? '<span class="badge win">推奨</span>' : '';
+    const reasonText = (r.reasoning || '');
     return `<tr>
       <td>${r.raceDate || '-'}</td>
       <td>${r.venue || '-'} ${r.distance || ''}m</td>
-      <td>${r.horseName || r.horseId}</td>
+      <td>${r.horseName || r.horseId} ${recBadge}</td>
       <td>${(Number(r.winProbability)*100).toFixed(1)}%</td>
       <td>${r.odds ? Number(r.odds).toFixed(1) : '-'}</td>
       <td>${ev}</td>
       <td>${badge}</td>
+      <td class="reasoning" title="${reasonText.replace(/"/g,'&quot;')}" onclick="this.classList.toggle('expanded')">${reasonText}</td>
     </tr>`;
   }).join('');
-  document.getElementById('recommended-table').innerHTML = `<table><thead><tr><th>日付</th><th>レース</th><th>馬名</th><th>勝率P</th><th>オッズO</th><th>EV</th><th>結果</th></tr></thead><tbody>${rows}</tbody></table>`;
+  document.getElementById('recommended-table').innerHTML = `<table><thead><tr><th>日付</th><th>レース</th><th>馬名</th><th>勝率P</th><th>オッズO</th><th>EV</th><th>結果</th><th>推論 (クリックで展開)</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function applyFilters() {
+  const raceId = document.getElementById('race-filter').value;
+  const sortKey = document.getElementById('sort-select').value;
+  let items = raceId ? allPredictions.filter(p => p.raceId === raceId) : [...allPredictions];
+  items.sort((a, b) => {
+    const va = a[sortKey] ?? 0, vb = b[sortKey] ?? 0;
+    if (sortKey === 'result') {
+      const ra = a.result ?? 999, rb = b.result ?? 999;
+      return ra - rb;
+    }
+    return Number(vb) - Number(va);
+  });
+  renderTable(items);
+}
+
+async function loadRaces() {
+  try {
+    const races = await fetchJSON(`${API_BASE}/races`);
+    const sel = document.getElementById('race-filter');
+    sel.innerHTML = '<option value="">全レース</option>';
+    for (const r of races) {
+      sel.innerHTML += `<option value="${r.raceId}">${r.date} ${r.venue} ${r.distance}m [${r.horseCount || 0}頭]</option>`;
+    }
+  } catch (e) {}
 }
 
 function renderROIChart(items) {
   if (!items.length) return;
   const dates = items.map(i => i.date).reverse();
   const roi = items.map(i => Number(i.roiPercent)).reverse();
-  const ev = items.map(i => Number(i.totalEV)).reverse();
   const ctx = document.getElementById('roiChart');
   new Chart(ctx, {
     type: 'line',
     data: {
       labels: dates,
       datasets: [
-        { label: '回収率 %', data: roi, borderColor: '#38bdf8', tension: 0.3, yAxisID: 'y' },
-        { label: '累積期待値', data: ev, borderColor: '#fbbf24', tension: 0.3, yAxisID: 'y1', borderDash: [4,4] }
+        { label: '回収率 %', data: roi, borderColor: '#38bdf8', tension: 0.3, yAxisID: 'y' }
       ]
     },
     options: {
@@ -117,8 +160,7 @@ function renderROIChart(items) {
       plugins: { legend: { labels: { color: '#94a3b8' } } },
       scales: {
         x: { ticks: { color: '#94a3b8', maxTicksLimit: 20 } },
-        y: { type: 'linear', position: 'left', ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
-        y1: { type: 'linear', position: 'right', ticks: { color: '#94a3b8' }, grid: { display: false } }
+        y: { type: 'linear', position: 'left', ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } }
       }
     }
   });
@@ -161,12 +203,17 @@ function renderBrierChart(items) {
     document.getElementById('stats').innerHTML = `<p class="loading">API接続エラー: Workerが応答しません</p>`;
   }
 
+  await loadRaces();
+
   try {
-    const recommended = await fetchJSON(`${API_BASE}/recommended`);
-    renderRecommended(recommended);
+    allPredictions = await fetchJSON(`${API_BASE}/recommended`);
+    applyFilters();
   } catch (e) {
     document.getElementById('recommended-table').innerHTML = `<p class="loading">データ読込エラー</p>`;
   }
+
+  document.getElementById('race-filter').addEventListener('change', applyFilters);
+  document.getElementById('sort-select').addEventListener('change', applyFilters);
 
   try {
     const roi = await fetchJSON(`${API_BASE}/roi`);

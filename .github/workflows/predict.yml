@@ -2,25 +2,25 @@ name: EquityEquine Daily Prediction
 
 on:
   schedule:
-    # 毎日 JST 9:00 (UTC 0:00) --- レース前の出走表確定後に実行
-    - cron: "0 0 * * *"
+    - cron: "0 0 * * *"  # JST 9:00
   workflow_dispatch:
     inputs:
       date:
-        description: "対象日 YYYY-MM-DD (空白で当日)"
+        description: "対象日 YYYY-MM-DD (空白で翌日)"
         required: false
 
 env:
   OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
   TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
   TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
-  WORKER_PREDICT_URL: ${{ secrets.WORKER_PREDICT_URL }}
   API_SECRET: ${{ secrets.API_SECRET }}
+  WORKER_PREDICT_URL: https://equity-equine-worker.tachibanananana.workers.dev
+  WORKER_SAVE_PREDICTIONS_URL: https://equity-equine-worker.tachibanananana.workers.dev/save-predictions
 
 jobs:
-  scrape-and-structure:
+  scrape-and-predict:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -33,33 +33,25 @@ jobs:
       - name: Install dependencies
         run: pip install -r scripts/requirements.txt
 
-      - name: Setup DB tables (first run)
-        run: python scripts/setup_tables.py
-
-      - name: Scrape race entries
+      - name: Determine target date
+        id: date
         run: |
-          DATE="${{ inputs.date || '' }}"
-          if [ -z "$DATE" ]; then
-            DATE=$(date +%Y-%m-%d)
+          if [ -n "${{ inputs.date }}" ]; then
+            echo "target=${{ inputs.date }}" >> $GITHUB_OUTPUT
+          else
+            echo "target=$(TZ=Asia/Tokyo date -d 'tomorrow' +%Y-%m-%d)" >> $GITHUB_OUTPUT
           fi
-          python scripts/scrape_race.py --date "$DATE" --output scraped_data.json
 
-      - name: Structure with V4 Flash
+      - name: Step 1 - Scrape race entries
+        run: python scripts/scrape_race.py --date "${{ steps.date.outputs.target }}" --output scraped_data.json
+
+      - name: Step 2 - Save to Turso DB
+        run: python scripts/save_and_predict.py --input scraped_data.json --skip-predict
+
+      - name: Step 3 - Predict with V4 Flash
         run: |
-          python scripts/structure_with_flash.py \
-            --input scraped_data.json \
-            --output structured_data.json
-
-      - name: Save to Turso & trigger prediction
-        run: |
-          python scripts/save_and_predict.py --input structured_data.json
-
-      - name: Upload artifacts (debug)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: race-data-${{ github.run_id }}
-          path: |
-            scraped_data.json
-            structured_data.json
-          retention-days: 7
+          if [ -s scraped_data.json ] && [ "$(cat scraped_data.json)" != "[]" ]; then
+            python scripts/predict_v4flash.py --input scraped_data.json
+          else
+            echo "[INFO] No races, skipping prediction"
+          fi

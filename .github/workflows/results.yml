@@ -16,31 +16,54 @@ on:
 env:
   TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
   TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+  WORKER_URL: https://equity-equine-worker.tachibanananana.workers.dev
 
 jobs:
   collect-results:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: "pip"
-          cache-dependency-path: scripts/requirements.txt
-
-      - name: Install dependencies
-        run: pip install -r scripts/requirements.txt
-
-      - name: Collect results
+      - name: Determine target date
+        id: vars
         run: |
-          DATE="${{ inputs.date || '' }}"
-          if [ -z "$DATE" ]; then
-            DATE=$(date +%Y-%m-%d)
+          if [ -n "${{ inputs.date }}" ]; then
+            echo "target_date=${{ inputs.date }}" >> $GITHUB_OUTPUT
+          else
+            echo "target_date=$(date +%Y-%m-%d)" >> $GITHUB_OUTPUT
           fi
-          EXTRA=""
+
+      - name: Query unconfirmed race IDs from Turso
+        id: races
+        run: |
+          TURSO_URL="${TURSO_DATABASE_URL/libsql:/https:}"
+
           if [ -n "${{ inputs.race_id }}" ]; then
-            EXTRA="--race-id ${{ inputs.race_id }}"
+            echo 'ids=["${{ inputs.race_id }}"]' | tee /tmp/race_ids.json
+          else
+            RESP=$(curl -s -H "Authorization: Bearer $TURSO_AUTH_TOKEN" \
+              "${TURSO_URL}/v2/pipeline" \
+              -d "{\"requests\":[{\"type\":\"execute\",\"stmt\":{\"sql\":\"SELECT id FROM races WHERE result_confirmed = 0 AND date = ?\",\"args\":[{\"type\":\"text\",\"value\":\"${{ steps.vars.outputs.target_date }}\"}]}}]}")
+            echo "$RESP" | python3 -c "
+import json,sys
+data=json.load(sys.stdin)
+rows=data.get('results',[{}])[0].get('response',{}).get('result',{}).get('rows',[])
+ids=[]
+for r in rows:
+  v=r[0]
+  if isinstance(v,dict): v=v.get('value','')
+  ids.append(v)
+json.dump(ids, open('/tmp/race_ids.json','w'))
+print(f'Found {len(ids)} unconfirmed races')
+"
           fi
-          python scripts/scrape_results.py --date "$DATE" $EXTRA
+
+      - name: Collect results via Worker
+        run: |
+          IDS=$(python3 -c "import json; print(' '.join(json.load(open('/tmp/race_ids.json'))))")
+          for rid in $IDS; do
+            echo "  Collecting $rid ..."
+            curl -sf -X POST "${WORKER_URL}/results-collect" \
+              -H "Content-Type: application/json" \
+              -d "{\"race_id\":\"$rid\"}" && echo " OK" || echo " FAIL"
+            sleep 1
+          done

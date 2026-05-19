@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EquityEquine ダッシュボード</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+  :root { --bg: #0f172a; --panel: #1e293b; --border: #334155; --text: #e2e8f0; --muted: #94a3b8; --accent: #38bdf8; --green: #4ade80; --red: #f87171; --gold: #fbbf24; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'SF Mono', 'Menlo', 'Monaco', monospace; background: var(--bg); color: var(--text); padding: 24px; }
+  h1 { font-size: 1.5rem; margin-bottom: 4px; color: var(--accent); }
+  .subtitle { color: var(--muted); font-size: 0.8rem; margin-bottom: 32px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 32px; }
+  .stat-card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .stat-card .label { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  .stat-card .value { font-size: 1.5rem; font-weight: 700; margin-top: 4px; }
+  .stat-card .value.green { color: var(--green); }
+  .stat-card .value.red { color: var(--red); }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 24px; }
+  .panel h2 { font-size: 1rem; margin-bottom: 16px; color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+  th { text-align: left; color: var(--muted); padding: 8px 12px; border-bottom: 1px solid var(--border); font-weight: 500; }
+  td { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  tr:hover { background: rgba(56, 189, 248, 0.05); }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; }
+  .badge.win { background: rgba(74,222,128,0.2); color: var(--green); }
+  .badge.lose { background: rgba(248,113,113,0.2); color: var(--red); }
+  .badge.pending { background: rgba(148,163,184,0.2); color: var(--muted); }
+  .chart-container { position: relative; width: 100%; height: 300px; }
+  .loading { color: var(--muted); text-align: center; padding: 32px; }
+  .tabs { display: flex; gap: 0; margin-bottom: 0; border: 1px solid var(--border); border-radius: 8px 8px 0 0; overflow: hidden; }
+  .tab { padding: 8px 16px; background: var(--panel); color: var(--muted); border: none; cursor: pointer; font-family: inherit; font-size: 0.8rem; }
+  .tab.active { background: var(--accent); color: var(--bg); }
+  .tab-content { border: 1px solid var(--border); border-top: none; border-radius: 0 0 8px 8px; padding: 16px; background: var(--panel); display: none; }
+  .tab-content.active { display: block; }
+</style>
+</head>
+<body>
+<h1>EquityEquine</h1>
+<p class="subtitle">競馬予想評価システム</p>
+
+<div class="stats" id="stats"></div>
+
+<div class="panel">
+  <h2>推奨馬リスト (期待値 EV = P × O &gt; 1.25)</h2>
+  <div id="recommended-table"></div>
+</div>
+
+<div class="panel">
+  <h2>回収率 推移</h2>
+  <div class="chart-container"><canvas id="roiChart"></canvas></div>
+</div>
+
+<div class="panel">
+  <h2>Brier Score 予測精度</h2>
+  <div class="chart-container"><canvas id="brierChart"></canvas></div>
+</div>
+
+<script>
+async function fetchJSON(url) {
+  const res = await fetch(url);
+  const data = await res.json();
+  return data.items || data;
+}
+
+function renderStats(stats) {
+  const roiClass = stats.roiPercent >= 100 ? 'green' : 'red';
+  document.getElementById('stats').innerHTML = `
+    <div class="stat-card"><div class="label">総レース数</div><div class="value">${stats.totalRaces}</div></div>
+    <div class="stat-card"><div class="label">総予測数</div><div class="value">${stats.totalPredictions}</div></div>
+    <div class="stat-card"><div class="label">推奨馬数</div><div class="value">${stats.recommendedBets}</div></div>
+    <div class="stat-card"><div class="label">回収率</div><div class="value ${roiClass}">${stats.roiPercent}%</div></div>
+  `;
+}
+
+function renderRecommended(items) {
+  if (!items.length) {
+    document.getElementById('recommended-table').innerHTML = '<p class="loading">データがありません</p>';
+    return;
+  }
+  const rows = items.map(r => {
+    let badge;
+    if (r.result === null || r.result === undefined) badge = '<span class="badge pending">未確定</span>';
+    else if (r.result === 1) badge = '<span class="badge win">1着</span>';
+    else badge = `<span class="badge lose">${r.result}着</span>`;
+    const ev = r.expectedValue ? Number(r.expectedValue).toFixed(2) : '-';
+    return `<tr>
+      <td>${r.raceDate || '-'}</td>
+      <td>${r.venue || '-'} ${r.distance || ''}m</td>
+      <td>${r.horseName || r.horseId}</td>
+      <td>${(Number(r.winProbability)*100).toFixed(1)}%</td>
+      <td>${r.odds ? Number(r.odds).toFixed(1) : '-'}</td>
+      <td>${ev}</td>
+      <td>${badge}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('recommended-table').innerHTML = `<table><thead><tr><th>日付</th><th>レース</th><th>馬名</th><th>勝率P</th><th>オッズO</th><th>EV</th><th>結果</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function renderROIChart(items) {
+  if (!items.length) return;
+  const dates = items.map(i => i.date).reverse();
+  const roi = items.map(i => Number(i.roiPercent)).reverse();
+  const ev = items.map(i => Number(i.totalEV)).reverse();
+  const ctx = document.getElementById('roiChart');
+  new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: dates,
+      datasets: [
+        { label: '回収率 %', data: roi, borderColor: '#38bdf8', tension: 0.3, yAxisID: 'y' },
+        { label: '累積期待値', data: ev, borderColor: '#fbbf24', tension: 0.3, yAxisID: 'y1', borderDash: [4,4] }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: '#94a3b8' } } },
+      scales: {
+        x: { ticks: { color: '#94a3b8', maxTicksLimit: 20 } },
+        y: { type: 'linear', position: 'left', ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
+        y1: { type: 'linear', position: 'right', ticks: { color: '#94a3b8' }, grid: { display: false } }
+      }
+    }
+  });
+}
+
+function renderBrierChart(items) {
+  if (!items.length) return;
+  const dates = [...new Set(items.map(i => i.date))].reverse();
+  const brierByDate = dates.map(d => {
+    const dayItems = items.filter(i => i.date === d);
+    const avg = dayItems.reduce((s, i) => s + Number(i.avgBrier), 0) / dayItems.length;
+    return avg;
+  });
+  const ctx = document.getElementById('brierChart');
+  new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: dates,
+      datasets: [
+        { label: 'Brier Score (低いほど正確)', data: brierByDate, backgroundColor: '#38bdf8' }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: '#94a3b8' } } },
+      scales: {
+        x: { ticks: { color: '#94a3b8', maxTicksLimit: 20 } },
+        y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' }, min: 0, max: 1 }
+      }
+    }
+  });
+}
+
+(async () => {
+  try {
+    const stats = await fetchJSON('/api/stats');
+    renderStats(stats);
+  } catch (e) {
+    document.getElementById('stats').innerHTML = `<p class="loading">API接続エラー</p>`;
+  }
+
+  try {
+    const recommended = await fetchJSON('/api/recommended');
+    renderRecommended(recommended);
+  } catch (e) {
+    document.getElementById('recommended-table').innerHTML = `<p class="loading">データ読込エラー</p>`;
+  }
+
+  try {
+    const roi = await fetchJSON('/api/roi');
+    if (roi.length) renderROIChart(roi);
+  } catch (e) {}
+
+  try {
+    const brier = await fetchJSON('/api/brier');
+    if (brier.length) renderBrierChart(brier);
+  } catch (e) {}
+
+  // 30秒ごとに統計だけ自動更新
+  setInterval(async () => {
+    try {
+      const stats = await fetchJSON('/api/stats');
+      renderStats(stats);
+    } catch (e) {}
+  }, 30000);
+})();
+</script>
+</body>
+</html>

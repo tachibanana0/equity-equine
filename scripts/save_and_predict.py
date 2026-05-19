@@ -1,6 +1,11 @@
 """
-構造化済みデータを Turso DB に保存し、Cloudflare Workers の推論APIを呼び出すスクリプト。
-Turso HTTP API を直接利用。
+構造化済みデータを Turso DB に保存し、Cloudflare Workers の推論 API を呼び出す。
+
+テーブル保存順序:
+  1. horses   (馬の基本情報 + 血統)
+  2. races    (レース基本情報)
+  3. past_results (過去走データ + V4 Flash 構造化コメント)
+  4. Workers predict API 呼び出し → predictions テーブルに保存
 """
 
 import json
@@ -10,218 +15,168 @@ import time
 import argparse
 import hashlib
 import hmac
+
 import requests
 
-TABLES_DDL = """
-CREATE TABLE IF NOT EXISTS races (
-    id TEXT PRIMARY KEY,
-    date TEXT NOT NULL,
-    venue TEXT NOT NULL,
-    distance INTEGER NOT NULL,
-    track_condition TEXT NOT NULL DEFAULT '良',
-    lap_times TEXT,
-    result_confirmed INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT (datetime('now'))
-);
 
-CREATE TABLE IF NOT EXISTS horses (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    sire TEXT,
-    damsire TEXT,
-    created_at TEXT DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS past_results (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    horse_id TEXT NOT NULL REFERENCES horses(id),
-    race_date TEXT NOT NULL,
-    finish_time REAL,
-    passage_rank TEXT,
-    last_3furlong REAL,
-    race_comment TEXT,
-    structured_comment TEXT,
-    created_at TEXT DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS predictions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    race_id TEXT NOT NULL REFERENCES races(id),
-    horse_id TEXT NOT NULL REFERENCES horses(id),
-    win_probability REAL NOT NULL,
-    reasoning_logic TEXT,
-    odds_at_prediction REAL,
-    expected_value REAL,
-    model_name TEXT NOT NULL,
-    recommended INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS actual_results (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    race_id TEXT NOT NULL REFERENCES races(id),
-    horse_id TEXT NOT NULL REFERENCES horses(id),
-    finish_order INTEGER,
-    confirmed_odds REAL,
-    hit INTEGER DEFAULT 0,
-    brier_score REAL,
-    created_at TEXT DEFAULT (datetime('now'))
-);
-"""
+def get_turso_conn():
+    """Turso HTTP API を使ってクエリを実行するヘルパー"""
+    db_url = os.environ.get("TURSO_DATABASE_URL")
+    auth_token = os.environ.get("TURSO_AUTH_TOKEN")
+    if not db_url or not auth_token:
+        print("[ERROR] TURSO_DATABASE_URL and TURSO_AUTH_TOKEN must be set")
+        sys.exit(1)
+    return db_url, auth_token
 
 
-class TursoDB:
-    def __init__(self):
-        self.db_url = os.environ.get("TURSO_DATABASE_URL", "")
-        self.auth_token = os.environ.get("TURSO_AUTH_TOKEN", "")
-        if not self.db_url or not self.auth_token:
-            print("[ERROR] TURSO_DATABASE_URL or TURSO_AUTH_TOKEN not set")
-            sys.exit(1)
+def turso_exec(db_url: str, auth_token: str, sql: str, params: list = None) -> dict:
+    """Turso HTTP API で SQL を実行"""
+    # Turso HTTP API エンドポイント
+    # 形式: https://[hostname]/v2/pipeline または libsql://...
+    # libsql:// から https:// に変換
+    url = db_url
+    if url.startswith("libsql://"):
+        url = url.replace("libsql://", "https://")
 
-        # libsql://host から https://host に変換
-        base = self.db_url.replace("libsql://", "https://")
-        self.api_url = f"{base}/v2/pipeline"
+    # pipeline エンドポイント
+    pipeline_url = f"{url}/v2/pipeline"
 
-        self._execute_raw(TABLES_DDL)
+    statements = [{"q": sql}]
+    if params:
+        statements[0]["params"] = params
 
-    def _execute_raw(self, sql: str) -> dict:
-        resp = requests.post(
-            self.api_url,
-            headers={
-                "Authorization": f"Bearer {self.auth_token}",
-                "Content-Type": "application/json",
-            },
-            json={"requests": [{"type": "execute", "stmt": {"sql": sql}}]},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        return resp.json()
-
-    def execute_batch(self, statements: list[str]) -> None:
-        requests_data = {
-            "requests": [
-                {"type": "execute", "stmt": {"sql": stmt}}
-                for stmt in statements
-            ]
-        }
-        resp = requests.post(
-            self.api_url,
-            headers={
-                "Authorization": f"Bearer {self.auth_token}",
-                "Content-Type": "application/json",
-            },
-            json=requests_data,
-            timeout=30,
-        )
-        resp.raise_for_status()
-
-
-def escape_sql(value) -> str:
-    if value is None:
-        return "NULL"
-    if isinstance(value, bool):
-        return "1" if value else "0"
-    if isinstance(value, (int, float)):
-        return str(value)
-    escaped = str(value).replace("'", "''")
-    return f"'{escaped}'"
-
-
-def save_race(db: TursoDB, race_data: dict) -> None:
-    race_id = race_data["race_id"]
-    venue = race_data.get("venue", "?")
-    date = race_data.get("date", "")
-    distance = race_data.get("distance", 0)
-    track_condition = race_data.get("track_condition", "良")
-
-    stmts = []
-
-    stmts.append(
-        f"INSERT OR IGNORE INTO races (id, date, venue, distance, track_condition) "
-        f"VALUES ({escape_sql(race_id)}, {escape_sql(date)}, {escape_sql(venue)}, "
-        f"{distance}, {escape_sql(track_condition)})"
+    resp = requests.post(
+        pipeline_url,
+        headers={
+            "Authorization": f"Bearer {auth_token}",
+            "Content-Type": "application/json",
+        },
+        json={"requests": [{"type": "execute", "stmt": {"sql": sql, "args": params or []}}]},
+        timeout=30,
     )
 
-    for h in race_data.get("horses", []):
-        horse_id = h["horse_id"]
-        horse_name = h["horse_name"]
-        sire = h.get("sire", "")
-        damsire = h.get("damsire", "")
+    if resp.status_code != 200:
+        print(f"  [WARN] Turso error {resp.status_code}: {resp.text[:200]}")
+        return None
 
-        stmts.append(
-            f"INSERT OR IGNORE INTO horses (id, name, sire, damsire) "
-            f"VALUES ({escape_sql(horse_id)}, {escape_sql(horse_name)}, "
-            f"{escape_sql(sire)}, {escape_sql(damsire)})"
+    return resp.json()
+
+
+def save_to_turso(races: list[dict]):
+    """スクレイピングデータを全テーブルに保存"""
+    db_url, auth = get_turso_conn()
+
+    for race in races:
+        race_id = race["race_id"]
+        race_date = race.get("date", "")
+        venue = race.get("venue", race_id[4:6])
+        distance = race.get("distance", 0)
+        track_condition = race.get("track_condition", "良")
+        lap_times = json.dumps(race.get("lap_times", {})) if race.get("lap_times") else None
+
+        # races テーブル (INSERT OR REPLACE)
+        turso_exec(db_url, auth,
+            "INSERT OR REPLACE INTO races (id, date, venue, distance, track_condition, lap_times) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [race_id, race_date, venue, distance, track_condition, lap_times],
         )
 
-        for past in h.get("past_results", []):
-            stmts.append(
-                "INSERT OR IGNORE INTO past_results "
-                "(horse_id, race_date, finish_time, passage_rank, last_3furlong, race_comment, structured_comment) "
-                f"VALUES ({escape_sql(horse_id)}, {escape_sql(past.get('race_date', ''))}, "
-                f"{past.get('finish_time') if past.get('finish_time') else 'NULL'}, "
-                f"{escape_sql(past.get('passage_rank', ''))}, "
-                f"{past.get('last_3furlong') if past.get('last_3furlong') else 'NULL'}, "
-                f"{escape_sql(past.get('race_comment', ''))}, "
-                f"{escape_sql(past.get('structured_comment', ''))})"
+        for h in race.get("horses", []):
+            horse_id = h["horse_id"]
+            horse_name = h["horse_name"]
+            sire = h.get("sire", "")
+            damsire = h.get("damsire", "")
+
+            # horses テーブル
+            turso_exec(db_url, auth,
+                "INSERT OR REPLACE INTO horses (id, name, sire, damsire) VALUES (?, ?, ?, ?)",
+                [horse_id, horse_name, sire, damsire],
             )
 
-    db.execute_batch(stmts)
-    print(f"[DB] Saved race {race_id}")
+            # past_results テーブル
+            for pi, past in enumerate(h.get("past_results", [])):
+                structured = past.get("structured_comment")
+                turso_exec(db_url, auth,
+                    "INSERT INTO past_results (horse_id, race_date, finish_time, passage_rank, last_3furlong, race_comment, structured_comment) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        horse_id,
+                        past.get("race_date", ""),
+                        past.get("finish_time"),
+                        past.get("passage_rank"),
+                        past.get("last_3furlong"),
+                        past.get("race_comment", ""),
+                        structured if isinstance(structured, str) else json.dumps(structured, ensure_ascii=False) if structured else None,
+                    ],
+                )
+
+            time.sleep(0.1)
+
+        print(f"  [OK] Saved race {race_id} ({len(race.get('horses', []))} horses)")
+
+    print(f"[DONE] Turso DB saved {len(races)} races")
 
 
-def call_predict_api(race_id: str) -> bool:
+def trigger_prediction(races: list[dict]):
+    """Workers predict API を呼び出す。レースごとの馬ID・オッズ情報を含める"""
     worker_url = os.environ.get("WORKER_PREDICT_URL")
     api_secret = os.environ.get("API_SECRET")
     if not worker_url or not api_secret:
-        print("[ERROR] WORKER_PREDICT_URL or API_SECRET not set")
-        return False
+        print("[ERROR] WORKER_PREDICT_URL and API_SECRET must be set")
+        sys.exit(1)
 
-    sig = hmac.new(api_secret.encode(), race_id.encode(), hashlib.sha256).hexdigest()
+    # 新しいリクエスト形式: { "races": [{ "race_id": "...", "horses": [{"horse_id": "...", "odds": 1.5}] }] }
+    race_entries = []
+    for race in races:
+        race_id = race.get("race_id")
+        if not race_id:
+            continue
+        horses = []
+        for h in race.get("horses", []):
+            horses.append({
+                "horse_id": h["horse_id"],
+                "odds": h.get("odds", 0),
+            })
+        race_entries.append({"race_id": race_id, "horses": horses})
+
+    body = json.dumps({"races": race_entries}).encode()
+    signature = hmac.new(
+        api_secret.encode(), body, hashlib.sha256
+    ).hexdigest()
+
     resp = requests.post(
         worker_url,
-        json={"race_id": race_id},
         headers={
             "Content-Type": "application/json",
-            "X-API-Signature": sig,
+            "X-API-Signature": signature,
         },
+        data=body,
         timeout=120,
     )
 
     if resp.status_code == 200:
-        print(f"[API] Prediction triggered for {race_id}: {resp.json()}")
-        return True
+        print(f"[OK] Prediction triggered for {len(race_entries)} races: {resp.text[:300]}")
     else:
-        print(f"[API] Failed to trigger prediction for {race_id}: {resp.status_code} {resp.text[:200]}")
-        return False
+        print(f"[ERROR] Prediction API returned {resp.status_code}: {resp.text[:300]}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Turso保存 + Worker推論呼び出し")
+    parser = argparse.ArgumentParser(description="Turso保存 + 推論API呼び出し")
     parser.add_argument("--input", required=True, help="structure_with_flash.py の出力JSON")
-    parser.add_argument("--skip-predict", action="store_true", help="推論呼び出しをスキップ")
+    parser.add_argument("--skip-predict", action="store_true", help="推論APIを呼ばず保存のみ")
     args = parser.parse_args()
 
     with open(args.input, "r", encoding="utf-8") as f:
         races = json.load(f)
 
-    db = TursoDB()
+    print(f"[INFO] Saving {len(races)} races to Turso")
+    save_to_turso(races)
 
-    for race in races:
-        try:
-            save_race(db, race)
-        except Exception as e:
-            print(f"[ERR] DB save failed for {race['race_id']}: {e}")
-            continue
-
-        if not args.skip_predict:
-            try:
-                call_predict_api(race["race_id"])
-            except Exception as e:
-                print(f"[ERR] Predict API call failed for {race['race_id']}: {e}")
-            time.sleep(1)
-
-    print("[DONE]")
+    if not args.skip_predict:
+        if races:
+            timestamp = races[0].get("date", "unknown")
+            print(f"[INFO] Triggering prediction for {len(races)} races (date: {timestamp})")
+            trigger_prediction(races)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,21 @@
+{
+  "name": "@equity-equine/pages",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler pages dev public --proxy ./src/index.ts",
+    "dev:app": "wrangler pages dev public",
+    "deploy": "wrangler pages deploy public",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.14.0",
+    "hono": "^4.6.14"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250301.0",
+    "typescript": "^5.7.0",
+    "wrangler": "^3.107.0"
+  }
+}

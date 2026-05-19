@@ -159,6 +159,10 @@ async function fetchHorseData(
   return map;
 }
 
+// ---------------------------------------------------------------------------
+// POST /predict — 推論エンドポイント
+// ---------------------------------------------------------------------------
+
 app.post("/predict", async (c) => {
   const body = await c.req.text();
   const signature = c.req.header("X-API-Signature");
@@ -181,9 +185,6 @@ app.post("/predict", async (c) => {
     return c.json({ error: "invalid json" }, 400);
   }
 
-  // サポートする2種類のリクエスト形式:
-  //   1. { "races": [{ "race_id": "...", "horses": [{"horse_id": "...", "odds": 1.5}] }] }
-  //   2. { "race_ids": ["..."] }  ← 後方互換 (odds なし)
   const raceEntries: { race_id: string; horse_ids: string[]; oddsMap: Map<string, number> }[] = [];
 
   if (payload.races && payload.races.length > 0) {
@@ -278,7 +279,7 @@ app.post("/predict", async (c) => {
         const n = horsesForPrompt.length;
         const equalP = 1.0 / n;
         prediction = {
-          horses: horsesForPrompt.map((h, i) => ({
+          horses: horsesForPrompt.map((_, i) => ({
             horse_index: i + 1,
             win_probability: Number(equalP.toFixed(4)),
             reasoning: `[DEV] 均等割り: 1/${n}`,
@@ -287,7 +288,6 @@ app.post("/predict", async (c) => {
       } else {
         let retries = 0;
         const maxRetries = 3;
-        let aiContent = "";
 
         while (retries < maxRetries) {
           try {
@@ -308,7 +308,7 @@ app.post("/predict", async (c) => {
               }),
             });
             const data = await res.json() as { choices?: { message?: { content?: string } }[] };
-            aiContent = data.choices?.[0]?.message?.content || "";
+            const aiContent = data.choices?.[0]?.message?.content || "";
             const jsonMatch = aiContent.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
               prediction = JSON.parse(jsonMatch[0]);
@@ -396,6 +396,7 @@ async function tursoQuery(bindings: Bindings, sql: string, args: unknown[] = [])
 }
 
 app.get("/dashboard/recommended", async (c) => {
+  c.header("Access-Control-Allow-Origin", "*");
   try {
     const rows = await tursoQuery(c.env, `
       SELECT p.race_id as raceId, p.horse_id as horseId, h.name as horseName,
@@ -417,6 +418,7 @@ app.get("/dashboard/recommended", async (c) => {
 });
 
 app.get("/dashboard/brier", async (c) => {
+  c.header("Access-Control-Allow-Origin", "*");
   try {
     const rows = await tursoQuery(c.env, `
       SELECT r.date as date, p.model_name as model,
@@ -437,6 +439,7 @@ app.get("/dashboard/brier", async (c) => {
 });
 
 app.get("/dashboard/roi", async (c) => {
+  c.header("Access-Control-Allow-Origin", "*");
   try {
     const rows = await tursoQuery(c.env, `
       SELECT r.date as date, COUNT(*) as totalBets,
@@ -457,6 +460,7 @@ app.get("/dashboard/roi", async (c) => {
 });
 
 app.get("/dashboard/stats", async (c) => {
+  c.header("Access-Control-Allow-Origin", "*");
   try {
     const [races] = await tursoQuery(c.env, "SELECT COUNT(*) as cnt FROM races");
     const [predictions] = await tursoQuery(c.env, "SELECT COUNT(*) as cnt FROM predictions");

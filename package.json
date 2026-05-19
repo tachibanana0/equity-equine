@@ -1,0 +1,13 @@
+{
+  "name": "equity-equine",
+  "private": true,
+  "scripts": {
+    "db:generate": "pnpm --filter @equity-equine/db generate",
+    "db:migrate": "pnpm --filter @equity-equine/db migrate",
+    "db:studio": "pnpm --filter @equity-equine/db studio",
+    "dev:worker": "pnpm --filter @equity-equine/worker dev",
+    "deploy:worker": "pnpm --filter @equity-equine/worker deploy",
+    "dev:pages": "pnpm --filter @equity-equine/pages dev",
+    "deploy:pages": "pnpm --filter @equity-equine/pages deploy"
+  }
+}

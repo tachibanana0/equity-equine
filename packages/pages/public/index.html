@@ -29,15 +29,12 @@
   .badge.pending { background: rgba(148,163,184,0.2); color: var(--muted); }
   .chart-container { position: relative; width: 100%; height: 300px; }
   .loading { color: var(--muted); text-align: center; padding: 32px; }
-  .tabs { display: flex; gap: 0; margin-bottom: 0; border: 1px solid var(--border); border-radius: 8px 8px 0 0; overflow: hidden; }
-  .tab { padding: 8px 16px; background: var(--panel); color: var(--muted); border: none; cursor: pointer; font-family: inherit; font-size: 0.8rem; }
-  .tab.active { background: var(--accent); color: var(--bg); }
-  .tab-content { border: 1px solid var(--border); border-top: none; border-radius: 0 0 8px 8px; padding: 16px; background: var(--panel); display: none; }
-  .tab-content.active { display: block; }
+  .online { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--green); margin-right: 6px; }
+  .offline { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--red); margin-right: 6px; }
 </style>
 </head>
 <body>
-<h1>EquityEquine</h1>
+<h1>EquityEquine <span id="status-dot" class="offline"></span></h1>
 <p class="subtitle">競馬予想評価システム</p>
 
 <div class="stats" id="stats"></div>
@@ -58,6 +55,8 @@
 </div>
 
 <script>
+const API_BASE = "https://equity-equine-worker.tachibanananana.workers.dev/dashboard";
+
 async function fetchJSON(url) {
   const res = await fetch(url);
   const data = await res.json();
@@ -155,35 +154,38 @@ function renderBrierChart(items) {
 
 (async () => {
   try {
-    const stats = await fetchJSON('/api/stats');
+    const stats = await fetchJSON(`${API_BASE}/stats`);
     renderStats(stats);
+    document.getElementById('status-dot').className = 'online';
   } catch (e) {
-    document.getElementById('stats').innerHTML = `<p class="loading">API接続エラー</p>`;
+    document.getElementById('stats').innerHTML = `<p class="loading">API接続エラー: Workerが応答しません</p>`;
   }
 
   try {
-    const recommended = await fetchJSON('/api/recommended');
+    const recommended = await fetchJSON(`${API_BASE}/recommended`);
     renderRecommended(recommended);
   } catch (e) {
     document.getElementById('recommended-table').innerHTML = `<p class="loading">データ読込エラー</p>`;
   }
 
   try {
-    const roi = await fetchJSON('/api/roi');
+    const roi = await fetchJSON(`${API_BASE}/roi`);
     if (roi.length) renderROIChart(roi);
   } catch (e) {}
 
   try {
-    const brier = await fetchJSON('/api/brier');
+    const brier = await fetchJSON(`${API_BASE}/brier`);
     if (brier.length) renderBrierChart(brier);
   } catch (e) {}
 
-  // 30秒ごとに統計だけ自動更新
   setInterval(async () => {
     try {
-      const stats = await fetchJSON('/api/stats');
+      const stats = await fetchJSON(`${API_BASE}/stats`);
       renderStats(stats);
-    } catch (e) {}
+      document.getElementById('status-dot').className = 'online';
+    } catch (e) {
+      document.getElementById('status-dot').className = 'offline';
+    }
   }, 30000);
 })();
 </script>

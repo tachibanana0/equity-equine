@@ -170,7 +170,10 @@ def main():
         races = json.load(f)
 
     print(f"[INFO] Saving {len(races)} races to Turso")
-    save_to_turso(races)
+    if races:
+        save_to_turso(races)
+    else:
+        print("[INFO] No races to save")
 
     if not args.skip_predict:
         if races:

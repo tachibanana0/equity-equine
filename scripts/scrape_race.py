@@ -347,6 +347,8 @@ def main():
     date_entries = fetch_date_list(d)
     if not date_entries:
         print(f"[INFO] No race dates found for {args.date}")
+        with open(args.output, "w", encoding="utf-8") as f:
+            json.dump([], f)
         sys.exit(0)
 
     print(f"[INFO] Found {len(date_entries)} date entries")
@@ -383,6 +385,8 @@ def main():
 
     if not all_races:
         print(f"[INFO] No races found for {args.date}")
+        with open(args.output, "w", encoding="utf-8") as f:
+            json.dump([], f)
         sys.exit(0)
 
     # Layer 3 + 4: 出走表 + 過去走

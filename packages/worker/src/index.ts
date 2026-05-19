@@ -259,6 +259,7 @@ app.post("/predict-now", async (c) => {
     if (!horseMap.has(id)) {
       horseMap.set(id, { name: (r.name as string) || "?", sire: (r.sire as string) || "不明", damsire: (r.damsire as string) || "不明", pasts: [] });
     }
+    if (horseMap.get(id)!.pasts.length >= 3) continue;
     const past = `  ${r.race_date || "?"}: タイム${r.finish_time ?? "?"} 通過${r.passage_rank ?? "?"} 上り3F${r.last_3furlong ?? "?"} ${r.race_comment || ""}`;
     horseMap.get(id)!.pasts.push(past);
   }
@@ -307,7 +308,7 @@ ${horseEntries.join("\n\n")}
   let result;
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 25000);
+    const timeout = setTimeout(() => controller.abort(), 50000);
     const data = await callOpenRouter(apiKey, model, "JSON only, no markdown.", prompt, 4096, controller.signal);
     clearTimeout(timeout);
 

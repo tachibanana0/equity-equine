@@ -250,25 +250,23 @@ def save_to_worker(worker_url: str, api_secret: str, race_id: str,
         if idx < 0 or idx >= len(horse_list):
             continue
         h = horse_list[idx]
+        odds = h.get("odds") or 0
+        ev = round(hp["win_probability"] * odds, 4) if odds else None
         pred_payload.append({
-            "horse_index": hp["horse_index"],
+            "race_id": race_id,
             "horse_id": h["horse_id"],
             "win_probability": hp["win_probability"],
-            "reasoning": hp.get("reasoning", ""),
-            "odds": h.get("odds", 0),
+            "reasoning_logic": hp.get("reasoning", ""),
+            "odds_at_prediction": odds if odds else None,
+            "expected_value": ev,
+            "model_name": MODEL,
+            "recommended": ev is not None and ev > 1.25,
         })
 
-    body = json.dumps({
-        "race_id": race_id,
-        "model": MODEL,
-        "predictions": pred_payload,
-    }).encode()
-
-    signature = hmac.new(api_secret.encode(), body, hashlib.sha256).hexdigest()
-
+    body = json.dumps({"predictions": pred_payload}).encode()
     resp = requests.post(
         worker_url,
-        headers={"Content-Type": "application/json", "X-API-Signature": signature},
+        headers={"Content-Type": "application/json"},
         data=body,
         timeout=30,
     )
@@ -278,7 +276,7 @@ def save_to_worker(worker_url: str, api_secret: str, race_id: str,
         return False
 
     data = resp.json()
-    print(f"[OK] Saved {data.get('saved', 0)} predictions, {data.get('recommended', 0)} recommended")
+    print(f"[OK] Saved {data.get('saved', 0)} predictions, {len([p for p in pred_payload if p['recommended']])} recommended")
     return True
 
 

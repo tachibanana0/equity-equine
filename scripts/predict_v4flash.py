@@ -209,7 +209,7 @@ def build_prompt(race_info: dict, horses: list[dict]) -> str:
 2. 通過順位から「出遅れ」「掛かり（先行しすぎて最後に失速）」等の展開を推測する。不利要素がある馬は勝率を下げる方向に評価する
 3. 上がり3ハロンが遅い馬は「末脚不足」と判断する
 4. 全馬の勝率合計がちょうど1.0になるように小数点以下4桁で算出する
-5. 推論理由を簡潔に説明する
+5. 推論理由を簡潔に説明する（必ず日本語で）
 
 以下のJSONで回答（JSONのみ、コードブロック不要）：
 {{
@@ -227,7 +227,7 @@ def call_ai(client: OpenAI, prompt: str, n_horses: int) -> dict:
             resp = client.chat.completions.create(
                 model=MODEL,
                 messages=[
-                    {"role": "system", "content": "JSON only. No markdown. No explanations outside JSON."},
+                    {"role": "system", "content": "あなたは競馬専門家です。JSON形式のみで回答し、コードブロックやJSON以外の説明は一切出力しないでください。推論理由は必ず日本語で記述してください。"},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.1,

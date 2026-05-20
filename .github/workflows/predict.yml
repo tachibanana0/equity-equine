@@ -53,8 +53,14 @@ jobs:
 
       - name: Step 3 - Predict with V4 Flash
         run: |
-          if [ -n "${{ inputs.race_ids }}" ]; then
-            # 特定レースのみ推論: Turso からデータ抽出 + 推論
+          if [ -s scraped_data.json ] && [ "$(cat scraped_data.json)" != "[]" ]; then
+            if [ -n "${{ inputs.race_ids }}" ]; then
+              python scripts/predict_v4flash.py --input scraped_data.json --race-id "${{ inputs.race_ids }}"
+            else
+              python scripts/predict_v4flash.py --input scraped_data.json
+            fi
+          elif [ -n "${{ inputs.race_ids }}" ]; then
+            # scraped_data がない場合: Turso からデータ抽出 + 推論
             python3 -c "
           import json, os, subprocess, sys
             
@@ -91,8 +97,6 @@ jobs:
           print(f'Extracted {len(races_data)} races')
           "
             python scripts/predict_v4flash.py --input turso_extract.json
-          elif [ -s scraped_data.json ] && [ "$(cat scraped_data.json)" != "[]" ]; then
-            python scripts/predict_v4flash.py --input scraped_data.json --race-id "${{ inputs.race_ids }}"
           else
             echo "[INFO] No races, skipping prediction"
           fi

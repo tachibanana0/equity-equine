@@ -182,22 +182,22 @@ def parse_shutuba(race_id: str) -> dict:
         m_horse_id = re.search(r"horse/(\d+)", horse_href)
         horse_id = m_horse_id.group(1) if m_horse_id else horse_name
 
-        # 単勝オッズ (.Tansho, .Odds の順に試す)
+        # 単勝オッズ
+        # shutuba 未来レース: td.Txt_R.Popular (値は ---.- の可能性あり)
+        # shutuba 過去レース: td.Odds Txt_R
+        # result 確定: 行内2番目の td.Odds
         odds_val = 0.0
-        for sel in [".Tansho", ".Odds"]:
+        for sel in ["td.Txt_R.Popular", ".Odds"]:
             odds_el = row.select_one(sel)
             if odds_el:
                 odds_text = odds_el.get_text(strip=True)
                 try:
-                    odds_val = float(re.sub(r"[^\d.]", "", odds_text))
-                    break
+                    v = float(re.sub(r"[^\d.]", "", odds_text))
+                    if v > 0:
+                        odds_val = v
+                        break
                 except ValueError:
                     continue
-        if odds_val == 0.0 and len(horses) == 0:
-            # デバッグ: 先頭行の全 td クラスを表示
-            tds = row.select("td")
-            classes = [f"{td.get('class','')}:{td.get_text(strip=True)[:15]}" for td in tds[:12]]
-            print(f"  [DEBUG] odds=0 for {horse_name}, td classes: {classes}")
 
         # 枠番
         gate_el = row.select_one(".Waku span, .Waku, td:first-child")

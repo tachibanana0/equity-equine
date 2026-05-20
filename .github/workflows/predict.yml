@@ -92,7 +92,7 @@ jobs:
           "
             python scripts/predict_v4flash.py --input turso_extract.json
           elif [ -s scraped_data.json ] && [ "$(cat scraped_data.json)" != "[]" ]; then
-            python scripts/predict_v4flash.py --input scraped_data.json
+            python scripts/predict_v4flash.py --input scraped_data.json --race-id "${{ inputs.race_ids }}"
           else
             echo "[INFO] No races, skipping prediction"
           fi

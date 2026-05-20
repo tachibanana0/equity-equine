@@ -52,11 +52,11 @@ actual_results
 netkeiba.com ────┐
                  │ scrape (shutuba.html → 出走表, result.html → 確定オッズ)
                  ▼
-    scripts/scrape_race.py (4層スクレイピング: 日付リスト→レース一覧→出走表→馬DB)
+    scripts/scrape_race.py (4層: 日付リスト→レース一覧→出走表→馬DB)
                  │
     scripts/save_and_predict.py (Turso 保存)
                  │
-    scripts/predict_v4flash.py (V4 Flash 推論: 血統/過去走/不利要素/ペース情報)
+    scripts/predict_v4flash.py (V4 Flash 推論: 血統/過去走/不利要素/ペース)
                  │
                  ▼
   Cloudflare Worker (/save-predictions)
@@ -96,14 +96,16 @@ netkeiba.com ────┐
 - **出走情報**: 枠番、騎手、斤量、馬体重
 - **馬基本情報**: 馬名、父馬、母父馬
 - **過去走データ**: 直近5走のタイム、通過順位、上り3F、着順
-- **不利要素検出**: 出遅れ（直近走の位置取りが通常より15ポジション以上後退）、掛かり（通常より極端な先行 + 失速5ポジション以上）
+- **不利要素検出**:
+  - 出遅れ: 直近走の位置取りが同馬の通常平均より15ポジション以上後退
+  - 掛かり: 通常より極端な先行 + 失速5ポジション以上
 - **ペース情報**: ラップタイムからペース種別 (H=ハイ, M=平均, S=スロー) と区間ラップを注入
 
 ### 出力
 - 全馬の勝率 (合計 ≒ 100%)
 - 期待値 (EV = 勝率 × オッズ)
 - 推奨馬判定 (EV > 1.25)
-- 推論理由 (reasoning)
+- 推論理由 (reasoning、日本語)
 
 ## データ収集範囲
 
@@ -111,19 +113,18 @@ netkeiba.com ────┐
 |--------|-------------|
 | レース基本情報 (場/距離/馬場) | 厩舎コメント (netkeiba Premium 有料) |
 | 出走馬 (馬名/ID) | レース短評 (無料枠では空) |
-| 血統 (父/母父) | |
+| 血統 (父/母父) | 出走前オッズ (未来レースは shutuba でマスク `---.-`) |
 | 過去走 (タイム/通過/上り3F) | |
 | 出走情報 (枠番/騎手/斤量/馬体重) | |
 | 確定オッズ (過去レースは result.html から取得) | |
-| 出走前オッズ (未来レースは shutuba.html から取得) | |
 | 着順 | |
 | ラップタイム | |
-| V4 Flash 勝率推論 | |
+| V4 Flash 勝率推論 (日本語) | |
 
 ## GitHub Actions ワークフロー
 
 ### predict.yml (毎日 9:00 JST)
-1. `scrape_race.py` — netkeiba からレースデータをスクレイピング（過去レースは確定オッズも取得）
+1. `scrape_race.py` — netkeiba からレースデータをスクレイピング（過去レースは確定オッズも result.html から取得）
 2. `save_and_predict.py --skip-predict` — Turso にデータ保存
 3. `predict_v4flash.py` — V4 Flash で推論し結果を Worker に送信
 
@@ -143,7 +144,9 @@ export TURSO_AUTH_TOKEN="..."
 export WORKER_SAVE_PREDICTIONS_URL="https://<worker>/save-predictions"
 export API_SECRET="..."
 
-# 2. スクレイピング（netkeiba はローカル環境からブロックされる場合あり、GH Actions 推奨）
+# 2. スクレイピング
+# netkeiba はローカル環境からブロックされる場合あり (python-requests の UA が Bot 判定)
+# GitHub Actions (Azure IP) が最も安定。ローカルでは Chrome UA + 指数バックオフ推奨
 python scripts/scrape_race.py --date 2026-05-17
 
 # 3. DB 保存
@@ -165,10 +168,24 @@ python scripts/predict_v4flash.py --input scraped_data.json
 - **最高確率馬的中率**: 58%（24レース中14レース） — JRA 1番人気勝率 ~33% より高い
 - **推奨馬に的中馬が含まれた率**: 42%
 
+## 最近の修正
+
+| 日付 | コミット | 内容 |
+|------|----------|------|
+| 2026-05-24 | `bb0b085` | fetch_html に指数バックオフリトライ追加 (400/429/502/503/504) |
+| 2026-05-24 | `148c399` | sleep 間隔を倍に (horse 0.5→1.0s, race 1.0→2.0s) |
+| 2026-05-24 | `c488e9c` | odds セレクタ修正: `.Popular` (人気順位) → `td.Txt_R.Popular` |
+| 2026-05-24 | `8f500a6` | odds セレクタ修正: `.Popular` 除去 (ninki rank を odds と誤マッチ) |
+| 2026-05-23 | `4c0328e` | 推論 reasoning を日本語化 |
+| 2026-05-23 | `3b34a9c` | 過去レース odds を result.html から補完 (Plan A) |
+| 2026-05-23 | `b2c3221` | 枠番/騎手/斤量/馬体重フィールド追加 |
+
 ## 未完了・制限事項
 
 1. **厩舎コメントが空**: netkeiba 無料枠ではコメントが取得不可。netkeiba Premium (¥550/月) で取得可能
 2. **Worker 30 秒制限**: 16 頭の推論が収まらないため、Python（GH Actions）側で推論を実行
-3. **DB 保存未対応の新フィールド**: 枠番/騎手/斤量/馬体重は scraped_data.json 経由でプロンプト注入済みだが、DB テーブルには保存されていない
+3. **DB 保存未対応の新フィールド**: 枠番/騎手/斤量/馬体重は scraped_data.json 経由でプロンプト注入済みだが、DB の predictions テーブルには保存されていない
 4. **タイム標準化**: 異なる距離/馬場のタイム比較のための標準化ロジックは未実装（検討中）
 5. **予測精度の経時分析**: データ蓄積後の回帰分析・モデル改善は未着手
+6. **netkeiba ローカルアクセス不可**: python-requests のデフォルト UA が Bot 判定。GitHub Actions (Azure IP) が最も安定
+7. **未来レースのオッズ**: レース2-3日前まで shutuba.html の odds が `---.-` にマスクされる

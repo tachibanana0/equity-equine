@@ -436,7 +436,7 @@ def main():
         group = entry["group"]
         entry_date = entry["date"]
         print(f"[INFO] Fetching race list for date={entry_date} group={group}")
-        time.sleep(0.5)
+        time.sleep(1.0)
 
         race_cards = fetch_race_list_sub(entry_date, group)
         print(f"  -> {len(race_cards)} races")
@@ -502,10 +502,10 @@ def main():
             h["past_results"] = past
             h["sire"] = sire
             h["damsire"] = damsire
-            time.sleep(0.5)
+            time.sleep(1.0)
 
         output_data.append(race_data)
-        time.sleep(1.0)
+        time.sleep(2.0)
 
     with open(args.output, "w", encoding="utf-8") as f:
         json.dump(output_data, f, ensure_ascii=False, indent=2)

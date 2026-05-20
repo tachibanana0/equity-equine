@@ -222,7 +222,7 @@ def call_ai(client: OpenAI, prompt: str, n_horses: int) -> dict:
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.1,
-                max_tokens=4096,
+                max_tokens=16384,
             )
             content = resp.choices[0].message.content or ""
             json_match = re.search(r"\{[\s\S]*\}", content)

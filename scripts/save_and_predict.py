@@ -29,6 +29,23 @@ def get_turso_conn():
     return db_url, auth_token
 
 
+def typed_args(values: list):
+    """Python values → Turso typed args format"""
+    result = []
+    for v in values:
+        if v is None:
+            result.append({"type": "null"})
+        elif isinstance(v, bool):
+            result.append({"type": "integer", "value": "1" if v else "0"})
+        elif isinstance(v, int):
+            result.append({"type": "integer", "value": str(v)})
+        elif isinstance(v, float):
+            result.append({"type": "float", "value": v})
+        else:
+            result.append({"type": "text", "value": str(v)})
+    return result
+
+
 def turso_exec(db_url: str, auth_token: str, sql: str, params: list = None) -> dict:
     """Turso HTTP API で SQL を実行"""
     # Turso HTTP API エンドポイント
@@ -41,9 +58,7 @@ def turso_exec(db_url: str, auth_token: str, sql: str, params: list = None) -> d
     # pipeline エンドポイント
     pipeline_url = f"{url}/v2/pipeline"
 
-    statements = [{"q": sql}]
-    if params:
-        statements[0]["params"] = params
+    args = typed_args(params) if params else []
 
     resp = requests.post(
         pipeline_url,
@@ -51,7 +66,7 @@ def turso_exec(db_url: str, auth_token: str, sql: str, params: list = None) -> d
             "Authorization": f"Bearer {auth_token}",
             "Content-Type": "application/json",
         },
-        json={"requests": [{"type": "execute", "stmt": {"sql": sql, "args": params or []}}]},
+        json={"requests": [{"type": "execute", "stmt": {"sql": sql, "args": args}}]},
         timeout=30,
     )
 

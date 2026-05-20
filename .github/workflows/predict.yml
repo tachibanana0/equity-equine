@@ -8,6 +8,9 @@ on:
       date:
         description: "対象日 YYYY-MM-DD (空白で翌日)"
         required: false
+      race_ids:
+        description: "特定レースID (空白で全レース、カンマ区切りで複数指定)"
+        required: false
 
 env:
   OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -50,7 +53,45 @@ jobs:
 
       - name: Step 3 - Predict with V4 Flash
         run: |
-          if [ -s scraped_data.json ] && [ "$(cat scraped_data.json)" != "[]" ]; then
+          if [ -n "${{ inputs.race_ids }}" ]; then
+            # 特定レースのみ推論: Turso からデータ抽出 + 推論
+            python3 -c "
+          import json, os, subprocess, sys
+            
+          def q(sql):
+              r = subprocess.run(['curl', '-s', '-X', 'POST',
+                  '${{ env.WORKER_PREDICT_URL }}/admin/query',
+                  '-H', 'Content-Type: application/json',
+                  '-d', json.dumps({'sql': sql})],
+                  capture_output=True, text=True)
+              return json.loads(r.stdout)['rows']
+            
+          race_ids = '${{ inputs.race_ids }}'.split(',')
+          races_data = []
+          for rid in race_ids:
+              rid = rid.strip()
+              rinfo = q(f\"SELECT venue, distance, track_condition FROM races WHERE id = '{rid}'\")
+              if not rinfo: continue
+              rinfo = rinfo[0]
+              horses = q(f\"SELECT DISTINCT h.id, h.name, h.sire, h.damsire FROM horses h JOIN predictions p ON p.horse_id = h.id WHERE p.race_id = '{rid}'\")
+              if not horses:
+                  horses = q(f\"SELECT h.id, h.name, h.sire, h.damsire FROM horses h WHERE h.id IN (SELECT horse_id FROM actual_results WHERE race_id = '{rid}')\")
+              hlist = []
+              for hr in horses:
+                  hid = hr['id']
+                  odds_r = q(f\"SELECT confirmed_odds FROM actual_results WHERE race_id = '{rid}' AND horse_id = '{hid}' AND id IN (SELECT MAX(a2.id) FROM actual_results a2 GROUP BY a2.race_id, a2.horse_id)\")
+                  odds = odds_r[0]['confirmed_odds'] if odds_r else None
+                  past_r = q(f\"SELECT race_date, finish_time, passage_rank, last_3furlong, finish_order FROM past_results WHERE horse_id = '{hid}' ORDER BY race_date DESC LIMIT 5\")
+                  pasts = [{'date': p['race_date'], 'finish_time': p['finish_time'], 'passage_rank': p['passage_rank'], 'last_3furlong': p['last_3furlong'], 'finish_order': p['finish_order']} for p in past_r]
+                  hlist.append({'horse_id': hid, 'horse_name': hr['name'], 'sire': hr['sire'], 'damsire': hr['damsire'], 'odds': odds, 'past_results': pasts})
+              races_data.append({'race_id': rid, 'venue': rinfo['venue'], 'distance': rinfo['distance'], 'track_condition': rinfo['track_condition'], 'horses': hlist})
+            
+          with open('turso_extract.json', 'w') as f:
+              json.dump(races_data, f, ensure_ascii=False)
+          print(f'Extracted {len(races_data)} races')
+          "
+            python scripts/predict_v4flash.py --input turso_extract.json
+          elif [ -s scraped_data.json ] && [ "$(cat scraped_data.json)" != "[]" ]; then
             python scripts/predict_v4flash.py --input scraped_data.json
           else
             echo "[INFO] No races, skipping prediction"

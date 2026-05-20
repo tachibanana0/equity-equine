@@ -53,7 +53,7 @@ def fetch_html(url: str, params: Optional[dict] = None, retries: int = 3) -> str
             resp.encoding = resp.apparent_encoding or "EUC-JP"
             return resp.text
         except requests.HTTPError as e:
-            if attempt < retries - 1 and resp.status_code in (429, 502, 503, 504):
+            if attempt < retries - 1 and resp.status_code in (403, 429, 502, 503, 504):
                 wait = backoff * (2 ** attempt)
                 print(f"  [RETRY] {resp.status_code} from {url[:60]}, waiting {wait:.0f}s (attempt {attempt+1}/{retries})")
                 time.sleep(wait)

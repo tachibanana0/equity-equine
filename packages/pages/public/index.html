@@ -119,16 +119,27 @@ function renderTable(items) {
 function applyFilters() {
   const raceId = document.getElementById('race-filter').value;
   const sortKey = document.getElementById('sort-select').value;
-  let items = raceId ? allPredictions.filter(p => p.raceId === raceId) : [...allPredictions];
-  items.sort((a, b) => {
-    const va = a[sortKey] ?? 0, vb = b[sortKey] ?? 0;
-    if (sortKey === 'result') {
-      const ra = a.result ?? 999, rb = b.result ?? 999;
-      return ra - rb;
+
+  async function render() {
+    let items;
+    if (raceId) {
+      // レース絞込時はサーバー側フィルタ (LIMIT 100 回避)
+      const data = await fetchJSON(`${API_BASE}/recommended?race_id=${raceId}`);
+      items = Array.isArray(data) ? data : (data.items || []);
+    } else {
+      items = [...allPredictions];
     }
-    return Number(vb) - Number(va);
-  });
-  renderTable(items);
+    items.sort((a, b) => {
+      const va = a[sortKey] ?? 0, vb = b[sortKey] ?? 0;
+      if (sortKey === 'result') {
+        const ra = a.result ?? 999, rb = b.result ?? 999;
+        return ra - rb;
+      }
+      return Number(vb) - Number(va);
+    });
+    renderTable(items);
+  }
+  render();
 }
 
 async function loadRaces() {

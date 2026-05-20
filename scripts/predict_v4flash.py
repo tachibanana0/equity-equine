@@ -183,8 +183,17 @@ def build_prompt(race_info: dict, horses: list[dict]) -> str:
         if disadvantages:
             dis_str = "\n不利要素:\n  " + "\n  ".join(disadvantages)
 
+        # 出走時情報
+        entry_info_parts = []
+        if h.get("gate"): entry_info_parts.append(f"枠{h['gate']}番")
+        if h.get("jockey"): entry_info_parts.append(f"騎手={h['jockey']}")
+        if h.get("handicap"): entry_info_parts.append(f"斤量{h['handicap']}kg")
+        if h.get("horse_weight"): entry_info_parts.append(f"馬体重{h['horse_weight']}")
+        entry_str = " ".join(entry_info_parts) if entry_info_parts else ""
+
         entries.append(
             f"馬{i+1}: {h['horse_name']} 父={h.get('sire','不明')} 母父={h.get('damsire','不明')}\n"
+            + (f"出走情報: {entry_str}\n" if entry_str else "") +
             f"過去戦績:\n{past_str}{dis_str}"
         )
 

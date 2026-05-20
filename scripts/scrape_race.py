@@ -193,10 +193,39 @@ def parse_shutuba(race_id: str) -> dict:
                 except ValueError:
                     continue
 
+        # 枠番
+        gate_el = row.select_one(".Waku span, .Waku, td:first-child")
+        gate = gate_el.get_text(strip=True) if gate_el else ""
+        try: gate = int(re.sub(r"[^\d]", "", str(gate)))
+        except: gate = 0
+
+        # 騎手
+        jockey_el = row.select_one(".Jockey a, .Jockey")
+        jockey = jockey_el.get_text(strip=True) if jockey_el else ""
+
+        # 斤量
+        handicap_el = row.select_one(".Handicap, .Weight:not(:last-child)")
+        handicap = 0.0
+        if handicap_el:
+            ht = handicap_el.get_text(strip=True)
+            try: handicap = float(re.sub(r"[^\d.]", "", ht))
+            except: pass
+
+        # 馬体重 (最終列にあることが多い)
+        weight_el = row.select_one("td.Weight:last-child, td:last-child")
+        horse_weight = weight_el.get_text(strip=True) if weight_el else ""
+        # 数字+記号パターンだけ抽出 (例: "500(+2)" → keep, 他の長文は破棄)
+        if horse_weight and not re.match(r"^[\d()+\-]+$", horse_weight):
+            horse_weight = ""
+
         horses.append({
             "horse_id": horse_id,
             "horse_name": horse_name,
             "odds": odds_val,
+            "gate": gate,
+            "jockey": jockey,
+            "handicap": handicap,
+            "horse_weight": horse_weight,
         })
 
     horses = horses[:18]  # JRA 平地戦最大18頭、超過分は補欠馬

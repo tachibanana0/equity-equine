@@ -54,7 +54,10 @@ jobs:
       - name: Step 3 - Predict with V4 Flash
         run: |
           if [ -s scraped_data.json ] && [ "$(cat scraped_data.json)" != "[]" ]; then
-            if [ -n "${{ inputs.race_ids }}" ]; then
+            if [ "${{ inputs.race_ids }}" = "first" ]; then
+              FIRST_ID=$(python3 -c "import json; d=json.load(open('scraped_data.json')); print(d[0]['race_id'])")
+              python scripts/predict_v4flash.py --input scraped_data.json --race-id "$FIRST_ID"
+            elif [ -n "${{ inputs.race_ids }}" ]; then
               python scripts/predict_v4flash.py --input scraped_data.json --race-id "${{ inputs.race_ids }}"
             else
               python scripts/predict_v4flash.py --input scraped_data.json

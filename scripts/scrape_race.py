@@ -184,7 +184,7 @@ def parse_shutuba(race_id: str) -> dict:
 
         # 単勝オッズ (td.Popular、td.Tansho、.Odds の順に試す)
         odds_val = 0.0
-        for sel in [".Popular", ".Tansho", ".Odds"]:
+        for sel in [".Tansho", ".Odds"]:
             odds_el = row.select_one(sel)
             if odds_el:
                 odds_text = odds_el.get_text(strip=True)

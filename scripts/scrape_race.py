@@ -381,8 +381,8 @@ def parse_past_results(horse_id: str, limit: int = 5) -> tuple[list[dict], str, 
                     "race_comment": comment,
                 })
                 count += 1
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  [WARN] parse_past_results({horse_id}): {e}")
 
     # 血統情報
     sire = ""
@@ -415,8 +415,8 @@ def parse_past_results(horse_id: str, limit: int = 5) -> tuple[list[dict], str, 
                         damsire_a = damsire_tds[1].select_one("a[href*='/horse/']")
                     if damsire_a:
                         damsire = damsire_a.get_text(strip=True)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  [WARN] parse_pedigree({horse_id}): {e}")
 
     return results, sire, damsire
 

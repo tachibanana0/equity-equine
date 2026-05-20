@@ -202,14 +202,13 @@ app.post("/save-predictions", async (c) => {
   const dbUrl = c.env.TURSO_DATABASE_URL;
   const auth = c.env.TURSO_AUTH_TOKEN;
 
-  // 重複排除: 同一 race+horse+model の古い予測を削除
-  for (let i = 0; i < preds.length; i += 50) {
-    const chunk = preds.slice(i, i + 50);
-    const placeholders = chunk.map(() => "(?, ?, ?)").join(", ");
-    const args = chunk.flatMap((p) => [p.race_id, p.horse_id, p.model_name]);
+  // 重複排除: 同一 race+model の古い予測を全削除
+  const raceModelSet = new Set(preds.map((p) => `${p.race_id}|${p.model_name}`));
+  for (const key of raceModelSet) {
+    const [raceId, model] = key.split("|");
     await tursoQuery(dbUrl, auth,
-      `DELETE FROM predictions WHERE (race_id, horse_id, model_name) IN (VALUES ${placeholders})`,
-      args
+      "DELETE FROM predictions WHERE race_id = ? AND model_name = ?",
+      [raceId, model]
     );
   }
 
@@ -373,6 +372,17 @@ app.post("/results-collect", async (c) => {
   // レース確認
   const raceRows = await tursoQuery(dbUrl, auth, "SELECT * FROM races WHERE id = ?", [raceId]);
   if (!raceRows.length) return c.json({ error: "race not found" }, 404);
+  const race = raceRows[0];
+
+  // 既に結果ありで force=false ならスキップ
+  if (race.result_confirmed && !payload.force) {
+    return c.json({ status: "skipped", reason: "already confirmed" });
+  }
+
+  // 既存の結果を削除 (INSERT OR REPLACE は auto-increment id のため効かない)
+  if (payload.force) {
+    await tursoQuery(dbUrl, auth, "DELETE FROM actual_results WHERE race_id = ?", [raceId]);
+  }
 
   // netkeiba 結果ページ取得
   let html = "";
@@ -475,10 +485,10 @@ app.get("/dashboard/races", dashCors, async (c) => {
   const rows = await tursoQuery(c.env.TURSO_DATABASE_URL, c.env.TURSO_AUTH_TOKEN,
     `SELECT r.id as raceId, r.date, r.venue, r.distance, r.track_condition,
       r.result_confirmed as resultConfirmed,
-      COUNT(DISTINCT h.id) as horseCount
+      COUNT(DISTINCT p.horse_id) as horseCount
      FROM races r
-     LEFT JOIN actual_results ar ON ar.race_id = r.id
-     LEFT JOIN horses h ON h.id IN (SELECT horse_id FROM actual_results WHERE race_id = r.id)
+     LEFT JOIN predictions p ON p.race_id = r.id
+       AND p.id IN (SELECT MAX(p2.id) FROM predictions p2 GROUP BY p2.race_id, p2.horse_id)
      GROUP BY r.id
      ORDER BY r.date DESC, r.venue, r.id`
   );
@@ -605,6 +615,41 @@ app.post("/admin/cleanup-dupes", async (c) => {
   );
 
   return c.json({ status: "ok" });
+});
+
+app.post("/admin/sync-odds", async (c) => {
+  let payload: { race_id?: string };
+  try { payload = await c.req.json(); } catch { payload = {}; }
+  const dbUrl = c.env.TURSO_DATABASE_URL;
+  const auth = c.env.TURSO_AUTH_TOKEN;
+
+  const whereRace = payload.race_id ? "AND p.race_id = ?" : "";
+  const args = payload.race_id ? [payload.race_id] : [];
+
+  // actual_results の confirmed_odds を predictions に同期
+  const rows = await tursoQuery(dbUrl, auth,
+    `SELECT p.id, p.win_probability, ar.confirmed_odds
+     FROM predictions p
+     JOIN actual_results ar ON ar.race_id = p.race_id AND ar.horse_id = p.horse_id
+     WHERE p.id IN (SELECT MAX(p2.id) FROM predictions p2 GROUP BY p2.race_id, p2.horse_id)
+       AND ar.id IN (SELECT MAX(a2.id) FROM actual_results a2 GROUP BY a2.race_id, a2.horse_id)
+       ${whereRace}`,
+    args
+  );
+
+  const stmts = rows.map((r) => {
+    const wp = r.win_probability as number;
+    const odds = r.confirmed_odds as number | null;
+    const ev = odds && wp ? Number((wp * odds).toFixed(4)) : null;
+    const rec = ev !== null && ev > 1.25 ? 1 : 0;
+    return {
+      sql: "UPDATE predictions SET odds_at_prediction = ?, expected_value = ?, recommended = ? WHERE id = ?",
+      args: [odds, ev, rec, r.id as number] as (string | number | null)[],
+    };
+  });
+
+  await tursoBatch(dbUrl, auth, stmts);
+  return c.json({ status: "ok", updated: stmts.length });
 });
 
 // =========================================================================

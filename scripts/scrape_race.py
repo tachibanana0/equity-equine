@@ -170,7 +170,7 @@ def parse_shutuba(race_id: str) -> dict:
     if date_match:
         race_date = f"{date_match.group(1)}-{date_match.group(2).zfill(2)}-{date_match.group(3).zfill(2)}"
 
-    # --- 出走馬 ---
+    # --- 出走馬 (最大18頭、補欠馬は除外) ---
     horses = []
     for row in soup.select("tr.HorseList"):
         name_el = row.select_one(".HorseInfo .HorseName a, .HorseInfo a")
@@ -198,6 +198,8 @@ def parse_shutuba(race_id: str) -> dict:
             "horse_name": horse_name,
             "odds": odds_val,
         })
+
+    horses = horses[:18]  # JRA 平地戦最大18頭、超過分は補欠馬
 
     return {
         "race_id": race_id,

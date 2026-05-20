@@ -40,11 +40,32 @@ VENUE_MAP = {
 }
 
 
-def fetch_html(url: str, params: Optional[dict] = None) -> str:
-    resp = requests.get(url, headers=HEADERS, params=params, timeout=30)
-    resp.encoding = resp.apparent_encoding or "EUC-JP"
-    resp.raise_for_status()
-    return resp.text
+def fetch_html(url: str, params: Optional[dict] = None, retries: int = 3) -> str:
+    backoff = 5.0
+    for attempt in range(retries):
+        try:
+            resp = requests.get(url, headers=HEADERS, params=params, timeout=30)
+            if resp.status_code == 429:
+                raise Exception("Rate limited (429)")
+            if resp.status_code == 400:
+                raise Exception(f"Blocked (400) from {url}")
+            resp.raise_for_status()
+            resp.encoding = resp.apparent_encoding or "EUC-JP"
+            return resp.text
+        except requests.HTTPError as e:
+            if attempt < retries - 1 and resp.status_code in (429, 502, 503, 504):
+                wait = backoff * (2 ** attempt)
+                print(f"  [RETRY] {resp.status_code} from {url[:60]}, waiting {wait:.0f}s (attempt {attempt+1}/{retries})")
+                time.sleep(wait)
+                continue
+            raise
+        except Exception as e:
+            if attempt < retries - 1 and ("429" in str(e) or "400" in str(e) or "Blocked" in str(e) or "Rate limited" in str(e)):
+                wait = backoff * (2 ** attempt)
+                print(f"  [RETRY] {e}, waiting {wait:.0f}s (attempt {attempt+1}/{retries})")
+                time.sleep(wait)
+                continue
+            raise
 
 
 def _ymd_to_yyyymmdd(date_str: str) -> str:

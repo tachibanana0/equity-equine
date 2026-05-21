@@ -518,11 +518,12 @@ async function fetchSP(url: string): Promise<string> {
 }
 
 app.post("/enrich-horse", async (c) => {
-  let payload: { horse_id: string; past_limit?: number };
+  let payload: { horse_id: string; past_limit?: number; pedigree_only?: boolean };
   try { payload = await c.req.json(); } catch { return c.json({ error: "invalid json" }, 400); }
 
   const horseId = payload.horse_id;
   const pastLimit = payload.past_limit || 5;
+  const pedigreeOnly = payload.pedigree_only === true;
   const dbUrl = c.env.TURSO_DATABASE_URL;
   const auth = c.env.TURSO_AUTH_TOKEN;
   const results: string[] = [];
@@ -580,6 +581,7 @@ app.post("/enrich-horse", async (c) => {
   const limitedIds = pastRaceIds.slice(0, pastLimit);
   const pastStmts: { sql: string; args: (string | number | null)[] }[] = [];
 
+  if (!pedigreeOnly) {
   for (const pastRid of limitedIds) {
     try {
       const raceHtml = await fetchSP(`${SP_ORIGIN}/race/${pastRid}/`);
@@ -654,6 +656,7 @@ app.post("/enrich-horse", async (c) => {
       results.push(`  ${pastRid}: error ${e}`);
     }
   }
+  } // end if !pedigreeOnly
 
   // 5. past_results 一括保存
   if (pastStmts.length) {
@@ -673,6 +676,99 @@ app.post("/enrich-horse", async (c) => {
     damsire,
     saved_past_results: pastStmts.length,
     log: results,
+  });
+});
+
+// =========================================================================
+// POST /enrich-race — SP版 netkeiba レース詳細から全馬の過去走データを一括取得
+// =========================================================================
+
+app.post("/enrich-race", async (c) => {
+  let payload: { race_id: string; target_horse_ids?: string[] };
+  try { payload = await c.req.json(); } catch { return c.json({ error: "invalid json" }, 400); }
+
+  const raceId = payload.race_id;
+  const targetIds = new Set(payload.target_horse_ids || []);
+  const dbUrl = c.env.TURSO_DATABASE_URL;
+  const auth = c.env.TURSO_AUTH_TOKEN;
+
+  // レース日付を race_id から抽出
+  const raceDateMatch = raceId.match(/^(\d{4})(\d{2})(\d{2})/);
+  const raceDate = raceDateMatch
+    ? `${raceDateMatch[1]}-${raceDateMatch[2]}-${raceDateMatch[3]}`
+    : "";
+
+  // SP レース詳細ページ取得
+  let raceHtml = "";
+  try {
+    raceHtml = await fetchSP(`${SP_ORIGIN}/race/${raceId}/`);
+  } catch (e) {
+    return c.json({ error: `SP fetch failed: ${e}` }, 502);
+  }
+
+  // 各行を解析
+  const rows = raceHtml.match(/<tr[^>]*>([\s\S]*?)<\/tr>/gi);
+  if (!rows) return c.json({ error: "no rows found" });
+
+  const stmts: { sql: string; args: (string | number | null)[] }[] = [];
+  const saved: string[] = [];
+
+  for (const row of rows) {
+    const idMatch = row.match(/\/horse\/([a-zA-Z0-9]+)\//);
+    if (!idMatch) continue;
+    const horseId = idMatch[1];
+
+    // target_horse_ids 指定ありなら対象馬のみ
+    if (targetIds.size > 0 && !targetIds.has(horseId)) continue;
+
+    const tds = row.split(/<\/td>/i).map(s => s.replace(/<[^>]+>/g, '').trim()).filter(Boolean);
+
+    let finishTime: number | null = null;
+    let passageRank = "";
+    let last3F: number | null = null;
+    let horseWeight = "";
+    let raceComment = "";
+
+    for (const cell of tds) {
+      if (!finishTime && /^\d:\d{2}\.\d$/.test(cell)) {
+        const parts = cell.split(":");
+        finishTime = parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
+      } else if (!passageRank && /^\d+-\d+(-\d+(-\d+)?)?$/.test(cell)) {
+        passageRank = cell;
+      } else if (!last3F && /^\d{1,2}\.\d$/.test(cell) && parseFloat(cell) < 50) {
+        last3F = parseFloat(cell);
+      } else if (!horseWeight && /^\d{3}\(/.test(cell)) {
+        horseWeight = cell;
+      }
+    }
+
+    const commentMatch = row.match(/horse_comment\.html\?id=\d+&rid=\d+/);
+    raceComment = commentMatch ? "(premium)" : "";
+
+    if (finishTime !== null || passageRank || last3F !== null) {
+      stmts.push({
+        sql: "INSERT INTO past_results (horse_id, race_date, finish_time, passage_rank, last_3furlong, race_comment) VALUES (?, ?, ?, ?, ?, ?)"
+          + " ON CONFLICT DO NOTHING",
+        args: [horseId, raceDate, finishTime, passageRank, last3F, raceComment || null],
+      });
+      saved.push(horseId);
+    }
+  }
+
+  if (stmts.length) {
+    try {
+      await tursoBatch(dbUrl, auth, stmts);
+    } catch (e) {
+      return c.json({ error: `DB save failed: ${e}`, saved_partial: stmts.length }, 500);
+    }
+  }
+
+  return c.json({
+    status: "ok",
+    race_id: raceId,
+    race_date: raceDate,
+    horses_in_race: stmts.length,
+    saved_horse_ids: saved,
   });
 });
 

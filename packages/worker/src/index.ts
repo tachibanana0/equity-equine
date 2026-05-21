@@ -500,6 +500,193 @@ app.post("/admin/query", async (c) => {
 });
 
 // =========================================================================
+// POST /enrich-horse — SP版 netkeiba から馬データ取得 → DB保存
+// =========================================================================
+
+const SP_ORIGIN = "https://db.sp.netkeiba.com";
+
+async function fetchSP(url: string): Promise<string> {
+  const resp = await fetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Accept-Language": "ja-JP,ja;q=0.9",
+    },
+  });
+  if (!resp.ok) throw new Error(`SP fetch failed: ${resp.status} ${url}`);
+  const buf = await resp.arrayBuffer();
+  return new TextDecoder("euc-jp").decode(buf);
+}
+
+app.post("/enrich-horse", async (c) => {
+  let payload: { horse_id: string; past_limit?: number };
+  try { payload = await c.req.json(); } catch { return c.json({ error: "invalid json" }, 400); }
+
+  const horseId = payload.horse_id;
+  const pastLimit = payload.past_limit || 5;
+  const dbUrl = c.env.TURSO_DATABASE_URL;
+  const auth = c.env.TURSO_AUTH_TOKEN;
+  const results: string[] = [];
+
+  // 1. SP 馬過去走一覧 → レースID抽出
+  let pastRaceIds: string[] = [];
+  try {
+    const resultHtml = await fetchSP(`${SP_ORIGIN}/horse/result/${horseId}/`);
+    const raceIdMatches = resultHtml.match(/\/race\/(\d{12})\//g);
+    if (raceIdMatches) {
+      const seen = new Set<string>();
+      for (const m of raceIdMatches) {
+        const rid = m.match(/\d{12}/)?.[0];
+        if (rid && !seen.has(rid)) {
+          seen.add(rid);
+          pastRaceIds.push(rid);
+        }
+      }
+    }
+    results.push(`pastRaceIds: ${pastRaceIds.length}`);
+  } catch (e) {
+    results.push(`pastRaceIds error: ${e}`);
+  }
+
+  // 2. SP 血統 → 父/母父 抽出
+  let sire = "";
+  let damsire = "";
+  try {
+    const pedHtml = await fetchSP(`${SP_ORIGIN}/horse/ped/${horseId}/`);
+    // Bloodセクション内の全 /horse/NNN/ リンク → 1番目=自身, 2番目=父
+    // さらに母(Female rowspan=8)の直後が母父
+    const bloodMatch = pedHtml.match(/<section class="Blood">([\s\S]*?)<\/section>/i);
+    const searchArea = bloodMatch ? bloodMatch[1] : pedHtml;
+
+    // 父: Blood内で先頭から2番目の /horse/NNN/ リンク
+    const nameLinks = [...searchArea.matchAll(/\/horse\/(\d+)\/"[^>]*>([^<]+)</gi)];
+    if (nameLinks.length >= 2) sire = nameLinks[1][2].trim();
+
+    // 母父: <td rowspan="8" class="Female"> の直後 Male td 内リンク
+    const damMatch = searchArea.match(/<td\b[^>]*rowspan\s*=\s*"8"[^>]*Female[^>]*>([\s\S]*?)<\/td>/i);
+    if (damMatch && typeof damMatch.index === 'number') {
+      const afterDam = searchArea.substring(damMatch.index + damMatch[0].length);
+      const linkMatch = afterDam.match(/<td[^>]*Male[^>]*>[\s\S]*?\/horse\/(\d+)\/"[\s\S]*?>([^<]+)</i);
+      if (linkMatch) damsire = linkMatch[2].trim();
+    }
+    results.push(`pedigree: sire=${sire}, damsire=${damsire}`);
+  } catch (e) {
+    results.push(`pedigree error: ${e}`);
+  }
+
+  // 3. 血統を horses に保存
+  if (sire || damsire) {
+    try {
+      await tursoQuery(dbUrl, auth,
+        "UPDATE horses SET sire = ?, damsire = ? WHERE id = ?",
+        [sire || null, damsire || null, horseId]
+      );
+      results.push("pedigree saved");
+    } catch (e) {
+      results.push(`pedigree save error: ${e}`);
+    }
+  }
+
+  // 4. 過去レース詳細からタイム/通過/上り/馬体重を抽出
+  const limitedIds = pastRaceIds.slice(0, pastLimit);
+  const pastStmts: { sql: string; args: (string | number | null)[] }[] = [];
+
+  for (const pastRid of limitedIds) {
+    try {
+      const raceHtml = await fetchSP(`${SP_ORIGIN}/race/${pastRid}/`);
+
+      // tbody 内の horse_id 行を探す
+      // 各行: <tr>...</tr> の中に /horse/{id}/ が出現
+      const rows = raceHtml.match(/<tr[^>]*>([\s\S]*?)<\/tr>/gi);
+      if (!rows) continue;
+
+      let targetCells: string[] | null = null;
+
+      for (const row of rows) {
+        if (!row.includes(`/horse/${horseId}/`)) continue;
+
+        // この行を <td...>...</td> に分割
+        const tds = row.split(/<\/td>/i).map(s => s.replace(/<[^>]+>/g, '').trim()).filter(Boolean);
+        targetCells = tds;
+
+        // 着順(0), 枠番(1), 馬番(2), 馬名(3), 性齢(4), 斤量(5), 騎手(6), タイム(7), 着差(8), ..., 通過, 上り, ...
+        // タイム: /\d:\d{2}\.\d/ パターン
+        // 通過: /\d+-\d+(-\d+)?/
+        // 上り: /^\d{1,2}\.\d$/
+        // 馬体重: /\d{3}\(\+?-\d+\)/
+        let finishTime: number | null = null;
+        let passageRank = "";
+        let last3F: number | null = null;
+        let horseWeight = "";
+        let raceComment = "";
+
+        for (const cell of tds) {
+          if (!finishTime && /^\d:\d{2}\.\d$/.test(cell)) {
+            // タイム文字列を秒数に変換
+            const parts = cell.split(":");
+            finishTime = parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
+          } else if (!passageRank && /^\d+-\d+(-\d+(-\d+)?)?$/.test(cell)) {
+            passageRank = cell;
+          } else if (!last3F && /^\d{1,2}\.\d$/.test(cell) && parseFloat(cell) < 50) {
+            last3F = parseFloat(cell);
+          } else if (!horseWeight && /^\d{3}\(/ .test(cell)) {
+            horseWeight = cell;
+          }
+        }
+
+        // 厩舎コメントは class="icon_cell" の次、または備考カラム
+        const commentMatch = row.match(/horse_comment\.html\?id=\d+&rid=\d+/);
+        raceComment = commentMatch ? "(premium)" : "";
+
+        const raceDateMatch = pastRid.match(/^(\d{4})(\d{2})(\d{2})/);
+        const raceDate = raceDateMatch
+          ? `${raceDateMatch[1]}-${raceDateMatch[2]}-${raceDateMatch[3]}`
+          : "";
+
+        if (finishTime !== null || passageRank || last3F !== null) {
+          // past_results に存在チェックしてなければ追加
+          const existing = await tursoQuery(dbUrl, auth,
+            "SELECT 1 FROM past_results WHERE horse_id = ? AND race_date = ?",
+            [horseId, raceDate]
+          );
+          if (!existing.length) {
+            pastStmts.push({
+              sql: "INSERT INTO past_results (horse_id, race_date, finish_time, passage_rank, last_3furlong, race_comment) VALUES (?, ?, ?, ?, ?, ?)",
+              args: [horseId, raceDate, finishTime, passageRank, last3F, raceComment || null],
+            });
+          }
+          results.push(`  ${pastRid}: time=${finishTime} pass=${passageRank} 3f=${last3F}`);
+        } else {
+          results.push(`  ${pastRid}: no data (${tds.length} cells)`);
+        }
+        break; // この馬が見つかった行で終了
+      }
+    } catch (e) {
+      results.push(`  ${pastRid}: error ${e}`);
+    }
+  }
+
+  // 5. past_results 一括保存
+  if (pastStmts.length) {
+    try {
+      await tursoBatch(dbUrl, auth, pastStmts);
+      results.push(`past_results saved: ${pastStmts.length}`);
+    } catch (e) {
+      results.push(`past_results save error: ${e}`);
+    }
+  }
+
+  return c.json({
+    status: "ok",
+    horse_id: horseId,
+    past_race_ids: limitedIds,
+    sire,
+    damsire,
+    saved_past_results: pastStmts.length,
+    log: results,
+  });
+});
+
+// =========================================================================
 // GET /health
 // =========================================================================
 

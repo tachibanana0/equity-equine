@@ -547,27 +547,17 @@ app.post("/enrich-horse", async (c) => {
     results.push(`pastRaceIds error: ${e}`);
   }
 
-  // 2. SP 血統 → 父/母父 抽出
+  // 2. SP 馬プロフィールページ → 父/母父 抽出
   let sire = "";
   let damsire = "";
   try {
-    const pedHtml = await fetchSP(`${SP_ORIGIN}/horse/ped/${horseId}/`);
-    // Bloodセクション内の全 /horse/NNN/ リンク → 1番目=自身, 2番目=父
-    // さらに母(Female rowspan=8)の直後が母父
-    const bloodMatch = pedHtml.match(/<section class="Blood">([\s\S]*?)<\/section>/i);
-    const searchArea = bloodMatch ? bloodMatch[1] : pedHtml;
-
-    // 父: Blood内で先頭から2番目の /horse/NNN/ リンク
-    const nameLinks = [...searchArea.matchAll(/\/horse\/(\d+)\/"[^>]*>([^<]+)</gi)];
-    if (nameLinks.length >= 2) sire = nameLinks[1][2].trim();
-
-    // 母父: <td rowspan="8" class="Female"> の直後 Male td 内リンク
-    const damMatch = searchArea.match(/<td\b[^>]*rowspan\s*=\s*"8"[^>]*Female[^>]*>([\s\S]*?)<\/td>/i);
-    if (damMatch && typeof damMatch.index === 'number') {
-      const afterDam = searchArea.substring(damMatch.index + damMatch[0].length);
-      const linkMatch = afterDam.match(/<td[^>]*Male[^>]*>[\s\S]*?\/horse\/(\d+)\/"[\s\S]*?>([^<]+)</i);
-      if (linkMatch) damsire = linkMatch[2].trim();
-    }
+    const horseHtml = await fetchSP(`${SP_ORIGIN}/horse/${horseId}/`);
+    // 「父」→ 次の /horse/{id}/ リンク (英数字ID対応, 外国産馬は000a0126a3形式)
+    const sireMatch = horseHtml.match(/父[\s\S]*?\/horse\/([a-zA-Z0-9]+)\/"[^>]*>([^<]+)</i);
+    if (sireMatch) sire = sireMatch[2].trim();
+    // 「母父」→ 次の /horse/{id}/ リンク
+    const damsireMatch = horseHtml.match(/母父[\s\S]*?\/horse\/([a-zA-Z0-9]+)\/"[^>]*>([^<]+)</i);
+    if (damsireMatch) damsire = damsireMatch[2].trim();
     results.push(`pedigree: sire=${sire}, damsire=${damsire}`);
   } catch (e) {
     results.push(`pedigree error: ${e}`);

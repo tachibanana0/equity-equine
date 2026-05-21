@@ -500,6 +500,36 @@ app.post("/admin/query", async (c) => {
 });
 
 // =========================================================================
+// GET /admin/db-check — DB疎通確認 (raw Turso response)
+// =========================================================================
+
+app.get("/admin/db-check", async (c) => {
+  const dbUrl = c.env.TURSO_DATABASE_URL;
+  const auth = c.env.TURSO_AUTH_TOKEN;
+  const tUrl = tursoUrl(dbUrl);
+
+  try {
+    const resp = await fetch(`${tUrl}/v2/pipeline`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${auth}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        requests: [{ type: "execute", stmt: { sql: "SELECT COUNT(*) as cnt FROM races" } }],
+      }),
+    });
+    const text = await resp.text();
+    let parsed;
+    try { parsed = JSON.parse(text); } catch { parsed = text; }
+    return c.json({
+      httpStatus: resp.status,
+      httpOk: resp.ok,
+      raw: parsed,
+    });
+  } catch (e: unknown) {
+    return c.json({ error: String(e) }, 500);
+  }
+});
+
+// =========================================================================
 // POST /enrich-horse — SP版 netkeiba から馬データ取得 → DB保存
 // =========================================================================
 

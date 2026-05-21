@@ -200,6 +200,7 @@ def main():
     parser = argparse.ArgumentParser(description="軽量出走表スクレイパー")
     parser.add_argument("--date", required=True, help="対象日 YYYY-MM-DD")
     parser.add_argument("--output", default="scraped_data.json", help="出力JSONファイル")
+    parser.add_argument("--race-ids", default=None, help="カンマ区切りのレースID (指定時はそのレースのみ)")
     args = parser.parse_args()
 
     tz_jst = timezone(timedelta(hours=9))
@@ -227,6 +228,12 @@ def main():
                 all_races.append(r)
 
     print(f"[INFO] Found {len(all_races)} races from {len(date_entries)} date entries")
+
+    # race-ids フィルタ
+    race_ids_filter = set(args.race_ids.split(",")) if args.race_ids else None
+    if race_ids_filter:
+        all_races = [r for r in all_races if r["race_id"] in race_ids_filter]
+        print(f"[INFO] Filtered to {len(all_races)} races")
 
     # 3. 各レースの出走表
     output = []

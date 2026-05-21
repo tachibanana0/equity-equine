@@ -33,8 +33,9 @@ def enrich_horse(horse_id: str, past_limit: int = 5) -> dict:
 def main():
     parser = argparse.ArgumentParser(description="Worker経由で馬データを取得")
     parser.add_argument("--input", required=True, help="scraped_data.json のパス")
-    parser.add_argument("--delay", type=float, default=1.5, help="馬ごとの待機時間(秒) [default: 1.5]")
+    parser.add_argument("--delay", type=float, default=1.0, help="馬ごとの待機時間(秒) [default: 1.0]")
     parser.add_argument("--past-limit", type=int, default=5, help="過去走の最大取得数 [default: 5]")
+    parser.add_argument("--race-ids", default=None, help="カンマ区切りのレースID (指定時はそのレースの馬のみ)")
     parser.add_argument("--dry-run", action="store_true", help="Worker を呼ばず馬ID一覧のみ表示")
     args = parser.parse_args()
 
@@ -44,6 +45,12 @@ def main():
     if not races:
         print("[INFO] No races in input")
         return
+
+    # race-ids フィルタ
+    race_ids_filter = set(args.race_ids.split(",")) if args.race_ids else None
+    if race_ids_filter:
+        races = [r for r in races if r.get("race_id") in race_ids_filter]
+        print(f"[INFO] Filtered to {len(races)} races")
 
     # 全馬 ID を収集
     all_horse_ids = set()

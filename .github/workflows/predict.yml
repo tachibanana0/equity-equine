@@ -47,7 +47,11 @@ jobs:
       - name: Step 1 - Scrape race entries (race.netkeiba.com only, fast)
         id: scrape
         run: |
-          python scripts/scrape_entries.py --date "${{ steps.date.outputs.target }}" --output scraped_data.json
+          ARGS="--date ${{ steps.date.outputs.target }}"
+          if [ -n "${{ inputs.race_ids }}" ] && [ "${{ inputs.race_ids }}" != "first" ]; then
+            ARGS="$ARGS --race-ids ${{ inputs.race_ids }}"
+          fi
+          python scripts/scrape_entries.py $ARGS --output scraped_data.json
           if [ ! -s scraped_data.json ] || [ "$(cat scraped_data.json)" = "[]" ]; then
             echo "no_races=true" >> $GITHUB_OUTPUT
           else
@@ -59,10 +63,11 @@ jobs:
       - name: Step 2 - Enrich horses via Worker (SP db.sp.netkeiba.com)
         if: steps.scrape.outputs.no_races == 'false'
         run: |
-          python scripts/enrich_horses.py \
-            --input scraped_data.json \
-            --delay 1.5 \
-            --past-limit 5
+          ARGS="--input scraped_data.json --delay 1.0 --past-limit 5"
+          if [ -n "${{ inputs.race_ids }}" ] && [ "${{ inputs.race_ids }}" != "first" ]; then
+            ARGS="$ARGS --race-ids ${{ inputs.race_ids }}"
+          fi
+          python scripts/enrich_horses.py $ARGS
 
       - name: Step 3 - Save entries to Turso DB
         if: steps.scrape.outputs.no_races == 'false'

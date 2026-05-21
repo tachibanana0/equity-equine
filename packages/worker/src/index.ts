@@ -501,9 +501,11 @@ app.post("/admin/query", async (c) => {
 
 // =========================================================================
 // GET /admin/db-check — DB疎通確認 (raw Turso response)
+//  ?sql=SELECT+COUNT(*)+FROM+races で任意SQLを実行して生レスポンスを返す
 // =========================================================================
 
 app.get("/admin/db-check", async (c) => {
+  const sql = c.req.query("sql") || "SELECT COUNT(*) as cnt FROM races";
   const dbUrl = c.env.TURSO_DATABASE_URL;
   const auth = c.env.TURSO_AUTH_TOKEN;
   const tUrl = tursoUrl(dbUrl);
@@ -513,7 +515,7 @@ app.get("/admin/db-check", async (c) => {
       method: "POST",
       headers: { Authorization: `Bearer ${auth}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        requests: [{ type: "execute", stmt: { sql: "SELECT COUNT(*) as cnt FROM races" } }],
+        requests: [{ type: "execute", stmt: { sql } }],
       }),
     });
     const text = await resp.text();
@@ -665,17 +667,10 @@ app.post("/enrich-horse", async (c) => {
           : "";
 
         if (finishTime !== null || passageRank || last3F !== null) {
-          // past_results に存在チェックしてなければ追加
-          const existing = await tursoQuery(dbUrl, auth,
-            "SELECT 1 FROM past_results WHERE horse_id = ? AND race_date = ?",
-            [horseId, raceDate]
-          );
-          if (!existing.length) {
-            pastStmts.push({
-              sql: "INSERT INTO past_results (horse_id, race_date, finish_time, passage_rank, last_3furlong, race_comment) VALUES (?, ?, ?, ?, ?, ?)",
-              args: [horseId, raceDate, finishTime, passageRank, last3F, raceComment || null],
-            });
-          }
+          pastStmts.push({
+            sql: "INSERT INTO past_results (horse_id, race_date, finish_time, passage_rank, last_3furlong, race_comment) VALUES (?, ?, ?, ?, ?, ?)",
+            args: [horseId, raceDate, finishTime, passageRank, last3F, raceComment || null],
+          });
           results.push(`  ${pastRid}: time=${finishTime} pass=${passageRank} 3f=${last3F}`);
         } else {
           results.push(`  ${pastRid}: no data (${tds.length} cells)`);

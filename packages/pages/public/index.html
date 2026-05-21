@@ -236,15 +236,7 @@ function renderBrierChart(items) {
     if (brier.length) renderBrierChart(brier);
   } catch (e) {}
 
-  setInterval(async () => {
-    try {
-      const stats = await fetchJSON(`${API_BASE}/stats`);
-      renderStats(stats);
-      document.getElementById('status-dot').className = 'online';
-    } catch (e) {
-      document.getElementById('status-dot').className = 'offline';
-    }
-  }, 30000);
+
 })();
 </script>
 </body>

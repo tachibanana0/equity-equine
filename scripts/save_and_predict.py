@@ -102,9 +102,9 @@ def save_to_turso(races: list[dict]):
             sire = h.get("sire", "")
             damsire = h.get("damsire", "")
 
-            # horses テーブル
+            # horses テーブル (INSERT OR IGNORE: Worker enrich-horse が先に保存した血統を上書きしない)
             turso_exec(db_url, auth,
-                "INSERT OR REPLACE INTO horses (id, name, sire, damsire) VALUES (?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO horses (id, name, sire, damsire) VALUES (?, ?, ?, ?)",
                 [horse_id, horse_name, sire, damsire],
             )
 

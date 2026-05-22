@@ -96,6 +96,44 @@ def fetch_race_list_sub(date_entry: dict) -> list[dict]:
         })
     return races
 
+def fetch_race_info(race_id: str) -> dict:
+    """shutuba ページからレース基本情報 (日付/会場/距離/馬場) を抽出"""
+    url = f"{NETKEIBA_RACE}/race/shutuba.html"
+    html = fetch_html(url, {"race_id": race_id})
+    soup = BeautifulSoup(html, "html.parser")
+    info: dict = {}
+
+    # 日付: "2026年5月24日" → "2026-05-24"
+    date_match = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日", html)
+    if date_match:
+        y, m, d = date_match[1], date_match[2].zfill(2), date_match[3].zfill(2)
+        info["date"] = f"{y}-{m}-{d}"
+
+    # 距離+馬場: "芝2400m" or "ダ1800m" in RaceData01
+    race_data = soup.select_one(".RaceData01")
+    if race_data:
+        text = race_data.get_text(" ", strip=True)
+        dist_match = re.search(r"(芝|ダ|障)(\d{3,4})m", text)
+        if dist_match:
+            info["track_condition"] = {"芝": "良", "ダ": "良", "障": "良"}.get(dist_match[1], "良")
+            info["distance"] = int(dist_match[2])
+        # 馬場状態: "良/稍重/重/不良"
+        for cond in ["良", "稍重", "重", "不良"]:
+            if cond in text:
+                info["track_condition"] = cond
+                break
+
+    # 会場名 (title or breadcrumb)
+    title = soup.select_one("title")
+    if title:
+        title_text = title.get_text(strip=True)
+        for v in ["東京", "中山", "京都", "阪神", "中京", "新潟", "福島", "札幌", "函館", "小倉"]:
+            if v in title_text:
+                info["venue"] = v
+                break
+
+    return info
+
 def parse_shutuba(race_id: str) -> list[dict]:
     """出走表から馬エントリを取得 (過去走・血統は含まない)"""
     url = f"{NETKEIBA_RACE}/race/shutuba.html"
@@ -238,13 +276,14 @@ def main():
         print(f"[INFO] Filtered to {len(all_races)} races (missing: {len(missing_race_ids)})")
         # 日付リストにないレースは直接 shutuba から取得 (netkeiba group 重複の制約回避)
         for mrid in missing_race_ids:
+            info = fetch_race_info(mrid)  # shutuba から date + distance + track 抽出
             venue_code = mrid[4:6]
             all_races.append({
                 "race_id": mrid,
-                "date": f"{mrid[0:4]}-{mrid[4:6]}-{mrid[6:8]}",
-                "venue": VENUE_MAP.get(venue_code, venue_code),
-                "distance": 0,
-                "track_condition": "良",
+                "date": info.get("date", f"{mrid[0:4]}-{mrid[4:6]}-{mrid[6:8]}"),
+                "venue": info.get("venue") or VENUE_MAP.get(venue_code, "不明"),
+                "distance": info.get("distance", 0),
+                "track_condition": info.get("track_condition", "良"),
             })
 
     # 3. 各レースの出走表

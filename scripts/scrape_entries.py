@@ -232,8 +232,20 @@ def main():
     # race-ids フィルタ
     race_ids_filter = set(args.race_ids.split(",")) if args.race_ids else None
     if race_ids_filter:
+        found_race_ids = set(r["race_id"] for r in all_races)
+        missing_race_ids = race_ids_filter - found_race_ids
         all_races = [r for r in all_races if r["race_id"] in race_ids_filter]
-        print(f"[INFO] Filtered to {len(all_races)} races")
+        print(f"[INFO] Filtered to {len(all_races)} races (missing: {len(missing_race_ids)})")
+        # 日付リストにないレースは直接 shutuba から取得 (netkeiba group 重複の制約回避)
+        for mrid in missing_race_ids:
+            venue_code = mrid[4:6]
+            all_races.append({
+                "race_id": mrid,
+                "date": f"{mrid[0:4]}-{mrid[4:6]}-{mrid[6:8]}",
+                "venue": VENUE_MAP.get(venue_code, venue_code),
+                "distance": 0,
+                "track_condition": "良",
+            })
 
     # 3. 各レースの出走表
     output = []
